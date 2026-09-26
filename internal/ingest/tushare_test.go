@@ -52,8 +52,16 @@ func mockTushare(t *testing.T) *httptest.Server {
 				},
 			)
 		case "stk_limit":
-			tradeDate, _ := req.Params["trade_date"].(string)
-			if tradeDate != "20240102" {
+			// 兼容两种调用:逐日的 trade_date,或按月的 start_date/end_date
+			requested := req.Params["trade_date"]
+			if requested == nil {
+				start, _ := req.Params["start_date"].(string)
+				end, _ := req.Params["end_date"].(string)
+				if start <= "20240102" && "20240102" <= end {
+					requested = "20240102"
+				}
+			}
+			if requested != "20240102" {
 				writeData([]string{}, nil)
 				return
 			}
@@ -135,11 +143,9 @@ func TestImportDateRange(t *testing.T) {
 	defer srv.Close()
 	importer, l := setupImporter(t, srv.URL)
 
-	var spec *TushareSpec
-	for _, s := range TushareSpecs() {
-		if s.Dataset == "stk_limit" {
-			spec = s
-		}
+	// 逐日模式:构造一个只支持 trade_date 的单日接口场景
+	spec := &TushareSpec{
+		Dataset: "stk_limit", APIName: "stk_limit", Mode: ModeDateRange, DateParam: "trade_date",
 	}
 	opts := ImportOptions{
 		StartDate: time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC),
@@ -164,6 +170,53 @@ func TestImportDateRange(t *testing.T) {
 	for cur.Next() {
 		row := cur.Row()
 		if row[0].S != "600000.SH" || row[2].F != 7.95 || row[3].F != 6.51 {
+			t.Errorf("row = %+v", row)
+		}
+		count++
+	}
+	if count != 1 {
+		t.Fatalf("want 1 row, got %d", count)
+	}
+}
+
+func TestImportMonthRange(t *testing.T) {
+	srv := mockTushare(t)
+	defer srv.Close()
+	importer, l := setupImporter(t, srv.URL)
+
+	var spec *TushareSpec
+	for _, s := range TushareSpecs() {
+		if s.Dataset == "stk_limit" {
+			spec = s
+		}
+	}
+	if spec.Mode != ModeMonthRange {
+		t.Fatalf("stk_limit should use month-range mode, got %s", spec.Mode)
+	}
+	opts := ImportOptions{
+		StartDate: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		EndDate:   time.Date(2024, 2, 29, 0, 0, 0, 0, time.UTC),
+	}
+	rows, err := importer.Import(context.Background(), spec, opts)
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	// mock 只对 2024-01 返回数据(1 行)
+	if rows != 1 {
+		t.Fatalf("want 1 row, got %d", rows)
+	}
+
+	// 数据应落在 year=2024 分区且字段正确
+	sc := query.NewScanner(l)
+	cur, err := sc.Open(query.Request{Dataset: "stk_limit", Columns: []string{"ts_code", "trade_date", "up_limit"}})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	defer cur.Close()
+	count := 0
+	for cur.Next() {
+		row := cur.Row()
+		if row[0].S != "600000.SH" || row[2].F != 7.95 {
 			t.Errorf("row = %+v", row)
 		}
 		count++
