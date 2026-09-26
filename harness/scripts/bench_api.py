@@ -62,19 +62,19 @@ def main() -> int:
 
     # 4) 单代码单日分钟
     lat = bench(lambda: pro.stk_mins(ts_code="600000.SH", freq="1min",
-                                     start_date="20240102 09:00:00", end_date="20240102 15:30:00"),
+                                     start_date="2024-01-02 09:00:00", end_date="2024-01-02 15:30:00"),
                 args.mins_reps)
     report("stk_mins 1 code / 1 day", lat,
            len(pro.stk_mins(ts_code="600000.SH", freq="1min",
-                            start_date="20240102 09:00:00", end_date="20240102 15:30:00")))
+                            start_date="2024-01-02 09:00:00", end_date="2024-01-02 15:30:00")))
 
     # 5) 单代码一个月分钟
     lat = bench(lambda: pro.stk_mins(ts_code="600000.SH", freq="1min",
-                                     start_date="20240101 09:00:00", end_date="20240131 15:30:00"),
+                                     start_date="2024-01-01 09:00:00", end_date="2024-01-31 15:30:00"),
                 max(3, args.mins_reps // 3))
     report("stk_mins 1 code / 1 month", lat,
            len(pro.stk_mins(ts_code="600000.SH", freq="1min",
-                            start_date="20240101 09:00:00", end_date="20240131 15:30:00")))
+                            start_date="2024-01-01 09:00:00", end_date="2024-01-31 15:30:00")))
 
     # 6) 基本信息
     lat = bench(lambda: pro.stock_basic(exchange="", list_status="L"), args.daily_reps)

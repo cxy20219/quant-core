@@ -42,7 +42,7 @@ $env:TUSHARE_TOKEN="xxxx"
 .\bin\quantd.exe verify --lake D:\quant-lake
 
 # 迁移对账(旧湖 vs 新湖逐分区行数)
-python tools\verify_migration.py --src E:\AI-work\quant-data\quant-store\lake --dst D:\quant-lake
+python harness\scripts\verify_migration.py --src E:\AI-work\quant-data\quant-store\lake --dst D:\quant-lake
 
 # 扫描诊断(查看剪枝效果)
 go run ./tools/lakediag --lake D:\quant-lake --dataset bars_daily --filter ts_code=600000.SH --start 20240101 --end 20241231

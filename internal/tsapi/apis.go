@@ -268,12 +268,15 @@ func codeValues(s string) []schema.Value {
 	return out
 }
 
-// parseDateTimeParam 解析 "YYYY-MM-DD HH:MM:SS" / "YYYYMMDD" 等格式为 micros。
+// parseDateTimeParam 解析常见日期时间格式为 micros,兼容 tushare 各接口的写法:
+// "2006-01-02 15:04:05" / "20060102 15:04:05" / "20060102150405" / "20060102" 等。
 func parseDateTimeParam(s string) (int64, error) {
 	s = strings.TrimSpace(s)
 	layouts := []string{
 		"2006-01-02 15:04:05",
 		"2006-01-02 15:04",
+		"20060102 15:04:05",
+		"20060102 15:04",
 		"20060102150405",
 		"2006-01-02",
 		"20060102",

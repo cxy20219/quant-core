@@ -1,0 +1,47 @@
+{
+  "_comment": "tushare 兼容接口的请求示例;所有请求均为 POST <服务地址>/,Content-Type: application/json",
+  "daily": {
+    "request": {
+      "api_name": "daily",
+      "token": "any",
+      "params": {"ts_code": "600000.SH", "start_date": "20240102", "end_date": "20240110"},
+      "fields": "ts_code,trade_date,open,close,vol,amount"
+    },
+    "expect": {
+      "code": 0,
+      "data.fields": ["ts_code", "trade_date", "open", "close", "vol", "amount"],
+      "note": "trade_date 为 YYYYMMDD 字符串;vol 单位手;amount 单位千元"
+    }
+  },
+  "daily_basic": {
+    "request": {
+      "api_name": "daily_basic",
+      "params": {"ts_code": "600000.SH", "trade_date": "20240102"},
+      "fields": "ts_code,trade_date,close,turnover_rate,pe,pb,total_mv"
+    },
+    "expect": {"code": 0, "note": "total_mv 单位万元"}
+  },
+  "adj_factor": {
+    "request": {
+      "api_name": "adj_factor",
+      "params": {"ts_code": "600000.SH", "start_date": "20240101", "end_date": "20241231"}
+    },
+    "expect": {"code": 0, "note": "默认只返回 hfq;传 factor_type=qfq 取前复权"}
+  },
+  "stk_mins": {
+    "request": {
+      "api_name": "stk_mins",
+      "params": {
+        "ts_code": "600000.SH",
+        "freq": "1min",
+        "start_date": "2024-01-02 09:00:00",
+        "end_date": "2024-01-02 15:30:00"
+      }
+    },
+    "expect": {"code": 0, "note": "vol 单位股、amount 单位元;freq 仅支持 1min"}
+  },
+  "error_example": {
+    "request": {"api_name": "not_exists", "params": {}},
+    "expect": {"code": -1, "msg": "unknown api_name \"not_exists\"", "data": null}
+  }
+}

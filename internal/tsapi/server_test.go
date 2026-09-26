@@ -228,6 +228,28 @@ func TestAdjFactorDefaultsToHfq(t *testing.T) {
 	}
 }
 
+func TestParseDateTimeParamFormats(t *testing.T) {
+	cases := map[string]int64{
+		"2024-01-02 09:31:00": 1704187860000000,
+		"20240102 09:31:00":   1704187860000000,
+		"2024-01-02 09:31":    1704187860000000,
+		"20240102 09:31":      1704187860000000,
+	}
+	for input, want := range cases {
+		got, err := parseDateTimeParam(input)
+		if err != nil {
+			t.Errorf("%q: %v", input, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("%q = %d, want %d", input, got, want)
+		}
+	}
+	if _, err := parseDateTimeParam("2024/01/02"); err == nil {
+		t.Error("expected error for unsupported format")
+	}
+}
+
 func TestUnknownAPIFails(t *testing.T) {
 	srv := NewServer(setupLake(t))
 	resp := post(t, srv, `{"api_name":"not_exists","params":{}}`)
