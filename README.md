@@ -34,8 +34,18 @@ go test ./internal/... -timeout 300s
 # 从旧湖(quant-data/quant-store)迁移
 .\bin\quantd.exe migrate --src E:\AI-work\quant-data\quant-store\lake --lake D:\quant-lake --jobs 8
 
+# 从 Tushare Pro 增量导入(需有效 token)
+$env:TUSHARE_TOKEN="xxxx"
+.\bin\quantd.exe import --source tushare --dataset stk_limit --start 20240101 --end 20240131 --lake D:\quant-lake
+
 # 行数核对(manifest vs parquet metadata)
 .\bin\quantd.exe verify --lake D:\quant-lake
+
+# 迁移对账(旧湖 vs 新湖逐分区行数)
+python tools\verify_migration.py --src E:\AI-work\quant-data\quant-store\lake --dst D:\quant-lake
+
+# 扫描诊断(查看剪枝效果)
+go run ./tools/lakediag --lake D:\quant-lake --dataset bars_daily --filter ts_code=600000.SH --start 20240101 --end 20241231
 ```
 
 ## 数据服务用法(Python)

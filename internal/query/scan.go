@@ -16,9 +16,18 @@ import (
 // Scanner 在数据湖上执行流式扫描,是读取湖数据的唯一实现。
 type Scanner struct {
 	Lake *lake.Lake
+	// Meta 是文件元数据缓存;为 nil 时不缓存。
+	Meta *MetaCache
+	// Debug 打开后输出行组计划(仅诊断用)。
+	Debug bool
 }
 
 func NewScanner(l *lake.Lake) *Scanner { return &Scanner{Lake: l} }
+
+// NewCachedScanner 创建带元数据缓存的扫描器。
+func NewCachedScanner(l *lake.Lake, maxFiles int) *Scanner {
+	return &Scanner{Lake: l, Meta: NewMetaCache(maxFiles)}
+}
 
 // Request 描述一次扫描。Filter 为 nil 时表示全量;Columns 为 nil 时返回全部字段。
 type Request struct {
@@ -59,6 +68,15 @@ type Cursor struct {
 	rgIdx  int
 	reader *parquet.Reader
 
+	meta *MetaCache
+	// debug 打开后输出行组计划到标准输出(仅诊断用)
+	debug bool
+	// 当前文件的缓存元数据(命中时用于剪枝,未命中时构建后写回)
+	fileMeta *fileMeta
+	// 跳过行组的计划:true 表示该行组可跳过(仅在使用缓存元数据时有效)
+	rgSkip []bool
+	rgPlan int
+
 	buf    []parquet.Row
 	bufN   int
 	bufPos int
@@ -77,6 +95,8 @@ type Cursor struct {
 // Stats 是扫描过程的观测统计。
 type Stats struct {
 	FilesOpened      int   `json:"files_opened"`
+	FilesSkipped     int   `json:"files_skipped"`
+	MetaBuilt        int   `json:"meta_built"`
 	RowGroupsRead    int   `json:"row_groups_read"`
 	RowGroupsSkipped int   `json:"row_groups_skipped"`
 	RowsSeen         int64 `json:"rows_seen"`
@@ -88,7 +108,7 @@ func (s *Scanner) Open(req Request) (*Cursor, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := &Cursor{ds: ds, filter: req.Filter, limit: req.Limit, offset: req.Offset}
+	c := &Cursor{ds: ds, filter: req.Filter, limit: req.Limit, offset: req.Offset, meta: s.Meta, debug: s.Debug}
 
 	// 输出列
 	if len(req.Columns) == 0 {
@@ -224,55 +244,135 @@ func (c *Cursor) Close() error {
 // advance 打开下一个可读行组,必要时切换到下一个文件。返回 false 表示扫描结束。
 func (c *Cursor) advance() bool {
 	for {
-		if c.pf != nil && c.rgIdx < len(c.pf.RowGroups()) {
-			rg := c.pf.RowGroups()[c.rgIdx]
-			c.rgIdx++
-			if c.rowGroupSkippable(rg) {
-				c.stats.RowGroupsSkipped++
-				continue
-			}
-			c.stats.RowGroupsRead++
-			if c.proj == nil {
-				if err := c.buildProjection(rg.Schema()); err != nil {
-					c.err = err
-					return false
+		if c.pf != nil {
+			if c.rgSkip != nil {
+				// 有跳过计划:只读计划中标记需要读取的行组
+				if c.rgPlan < len(c.rgSkip) {
+					idx := c.rgPlan
+					c.rgPlan++
+					if c.debug {
+						fmt.Printf("[debug] plan idx=%d skip=%v planLen=%d total=%d\n", idx, c.rgSkip[idx], len(c.rgSkip), len(c.pf.RowGroups()))
+					}
+					if c.rgSkip[idx] {
+						c.stats.RowGroupsSkipped++
+						continue
+					}
+					c.stats.RowGroupsRead++
+					if c.proj == nil {
+						if err := c.buildProjection(c.pf.RowGroups()[idx].Schema()); err != nil {
+							c.err = err
+							return false
+						}
+					}
+					c.reader = parquet.NewRowGroupReader(c.pf.RowGroups()[idx], c.proj)
+					c.rgIdx = idx + 1
+					return true
 				}
+				// 计划耗尽,当前文件处理完毕
+				_ = c.file.Close()
+				c.file, c.pf = nil, nil
+			} else if c.rgIdx < len(c.pf.RowGroups()) {
+				// 无过滤条件:顺序读取行组
+				rg := c.pf.RowGroups()[c.rgIdx]
+				c.rgIdx++
+				c.stats.RowGroupsRead++
+				if c.proj == nil {
+					if err := c.buildProjection(rg.Schema()); err != nil {
+						c.err = err
+						return false
+					}
+				}
+				c.reader = parquet.NewRowGroupReader(rg, c.proj)
+				return true
+			} else {
+				_ = c.file.Close()
+				c.file, c.pf = nil, nil
 			}
-			c.reader = parquet.NewRowGroupReader(rg, c.proj)
-			return true
-		}
-		if c.file != nil {
-			_ = c.file.Close()
-			c.file, c.pf = nil, nil
 		}
 		if c.fileIdx >= len(c.files) {
 			return false
 		}
 		ref := c.files[c.fileIdx]
 		c.fileIdx++
+		st, err := os.Stat(ref.Path)
+		if err != nil {
+			c.err = err
+			return false
+		}
+		size, modUnix := st.Size(), st.ModTime().UnixNano()
+
+		// 缓存命中:先用元数据判断整文件可否跳过,再决定是否打开
+		if fm, ok := c.meta.get(ref.Path, size, modUnix); ok {
+			mayMatch, _ := fileMetaMayMatch(fm, c.ds, c.filter)
+			if !mayMatch {
+				c.stats.FilesSkipped++
+				continue
+			}
+			// 需要读数据:仍需打开文件,但沿用缓存统计生成跳过计划
+			fh, err := os.Open(ref.Path)
+			if err != nil {
+				c.err = err
+				return false
+			}
+			pf, err := parquet.OpenFile(fh, size)
+			if err != nil {
+				_ = fh.Close()
+				c.err = fmt.Errorf("open %s: %w", ref.Path, err)
+				return false
+			}
+			c.file, c.pf, c.rgIdx = fh, pf, 0
+			c.colIdx, c.proj, c.reader = nil, nil, nil
+			c.fileMeta = fm
+			c.rgSkip = rgSkipPlan(fm, c.ds, c.filter)
+			c.rgPlan = 0
+			c.stats.FilesOpened++
+			continue
+		}
+
 		fh, err := os.Open(ref.Path)
 		if err != nil {
 			c.err = err
 			return false
 		}
-		st, err := fh.Stat()
-		if err != nil {
-			_ = fh.Close()
-			c.err = err
-			return false
-		}
-		pf, err := parquet.OpenFile(fh, st.Size())
+		pf, err := parquet.OpenFile(fh, size)
 		if err != nil {
 			_ = fh.Close()
 			c.err = fmt.Errorf("open %s: %w", ref.Path, err)
 			return false
 		}
 		c.file, c.pf, c.rgIdx = fh, pf, 0
-		c.colIdx = nil
-		c.proj = nil
-		c.reader = nil
+		c.colIdx, c.proj, c.reader = nil, nil, nil
+		c.fileMeta = buildFileMeta(pf, size, modUnix)
+		c.meta.put(ref.Path, c.fileMeta)
+		c.rgSkip = rgSkipPlan(c.fileMeta, c.ds, c.filter)
+		c.rgPlan = 0
 		c.stats.FilesOpened++
+		c.stats.MetaBuilt++
 	}
+}
+
+// rgSkipPlan 生成行组跳过计划(按当前过滤条件)。
+func rgSkipPlan(fm *fileMeta, ds *schema.Dataset, filter *Filter) []bool {
+	if filter == nil || len(filter.Preds) == 0 {
+		return nil
+	}
+	plan := make([]bool, len(fm.groups))
+	for i := range fm.groups {
+		rgm := &fm.groups[i]
+		skip := false
+		for _, pred := range filter.Preds {
+			stats, ok := rgm.cols[ds.Fields[pred.Field].Name]
+			if !ok || !stats.hasIndex {
+				continue
+			}
+			if !statsMayMatch(stats, pred, ds.Fields[pred.Field].Type) {
+				skip = true
+				break
+			}
+		}
+		plan[i] = skip
+	}
+	return plan
 }
 
 // buildProjection 构建列投影 schema,并计算各读列的 timestamp 缩放。
@@ -331,35 +431,6 @@ func (c *Cursor) convertRow(prow parquet.Row) ([]schema.Value, error) {
 		row[col] = v
 	}
 	return row, nil
-}
-
-// rowGroupSkippable 用列统计判断行组是否可能包含匹配行。
-func (c *Cursor) rowGroupSkippable(rg parquet.RowGroup) bool {
-	if c.filter == nil || len(c.filter.Preds) == 0 {
-		return false
-	}
-	if c.colIdx == nil {
-		c.colIdx = make(map[string]int)
-		for i, f := range rg.Schema().Fields() {
-			c.colIdx[f.Name()] = i
-		}
-	}
-	chunks := rg.ColumnChunks()
-	for _, pred := range c.filter.Preds {
-		name := c.ds.Fields[pred.Field].Name
-		ci, ok := c.colIdx[name]
-		if !ok || ci >= len(chunks) {
-			continue
-		}
-		idx, err := chunks[ci].ColumnIndex()
-		if err != nil || idx == nil || idx.NumPages() == 0 {
-			continue // 没有页索引,保守处理
-		}
-		if !pred.statsMayMatch(idx, c.ds.Fields[pred.Field].Type) {
-			return true
-		}
-	}
-	return false
 }
 
 // partitionAccept 根据过滤条件推导分区剪枝函数。

@@ -87,11 +87,29 @@ type Server struct {
 	APIs   map[string]*API
 	Tokens []string // 非空时校验 token
 	Logf   func(format string, args ...any)
+	// Scanner 为 nil 时按需创建;服务进程应复用带缓存的扫描器。
+	Scanner *query.Scanner
 }
 
 // NewServer 创建服务并注册默认接口。
 func NewServer(l *lake.Lake) *Server {
-	return &Server{Lake: l, APIs: DefaultAPIs()}
+	return &Server{
+		Lake:    l,
+		APIs:    DefaultAPIs(),
+		Scanner: query.NewCachedScanner(l, 4096),
+	}
+}
+
+// NewUncachedServer 创建不带元数据缓存的服务(测试用)。
+func NewUncachedServer(l *lake.Lake) *Server {
+	return &Server{Lake: l, APIs: DefaultAPIs(), Scanner: query.NewScanner(l)}
+}
+
+func (s *Server) scanner() *query.Scanner {
+	if s.Scanner != nil {
+		return s.Scanner
+	}
+	return query.NewScanner(s.Lake)
 }
 
 func (s *Server) logf(format string, args ...any) {
@@ -252,7 +270,7 @@ func (s *Server) execute(api *API, req *apiRequest) (*apiData, error) {
 		offset = 0
 	}
 
-	cur, err := query.NewScanner(s.Lake).Open(query.Request{
+	cur, err := s.scanner().Open(query.Request{
 		Dataset: api.Dataset,
 		Filter:  filter,
 		Columns: outFields,

@@ -298,6 +298,39 @@ func TestSingleDayFilter(t *testing.T) {
 	}
 }
 
+func TestMetaCacheReuse(t *testing.T) {
+	reg := loadRegistry(t)
+	l := newTestLake(t, reg)
+	ds, _ := reg.Get("bars_daily")
+
+	codeIdx, _ := ds.FieldIndex("ts_code")
+	writePartition(t, l, ds, map[string]string{"year": "2023"}, [][]schema.Value{
+		dailyRow(t, ds, "600000.SH", mustDate(t, "20230103"), 10.0, 1000),
+		dailyRow(t, ds, "600000.SH", mustDate(t, "20230104"), 10.5, 2000),
+		dailyRow(t, ds, "000001.SZ", mustDate(t, "20230104"), 20.0, 3000),
+	})
+
+	sc := NewCachedScanner(l, 16)
+	filter := &Filter{Preds: []Predicate{In(codeIdx, schema.Str("600000.SH"))}}
+
+	// 第一次扫描:构建元数据缓存
+	rows, stats := collect(t, sc, Request{Dataset: "bars_daily", Filter: filter})
+	if len(rows) != 2 {
+		t.Fatalf("first scan: want 2 rows, got %d", len(rows))
+	}
+	if stats.MetaBuilt == 0 {
+		t.Error("first scan should build metadata")
+	}
+	if sc.Meta.Len() == 0 {
+		t.Error("metadata cache should be populated")
+	}
+
+	// 第二次扫描:应命中缓存,不再构建元数据
+	if _, stats2 := collect(t, sc, Request{Dataset: "bars_daily", Filter: filter}); stats2.MetaBuilt != 0 {
+		t.Errorf("second scan rebuilt metadata: %+v", stats2)
+	}
+}
+
 func TestTimestampRoundTrip(t *testing.T) {
 	reg := loadRegistry(t)
 	l := newTestLake(t, reg)
