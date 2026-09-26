@@ -1,0 +1,215 @@
+# quant-core 数据集注册表(单一权威)
+#
+# 所有组件(查询服务/迁移器/回测引擎/导入器)都从这里读取数据集定义,
+# 不允许在代码中硬编码字段名、分区方式或单位。
+#
+# 约定:
+#   - 内部字段名直接使用 tushare 字段名,对外服务零改名。
+#   - 单位统一:vol=手、amount=千元、*_share=万股、*_mv=万元(与 tushare 一致)。
+#   - 日期以原生类型存储(date32 / timestamp_micros),API 层负责格式化输出。
+#   - 浮点字段一律 optional,NaN 统一存为 null,避免 JSON 序列化问题。
+version: 1
+
+datasets:
+  bars_daily:
+    description: 股票日线行情(未复权,合并每日估值指标)
+    root: canonical/bars_daily
+    partitions: [year]
+    primary_key: [ts_code, trade_date]
+    sorted_by: [ts_code, trade_date]
+    writer: {row_group_rows: 8192, target_file_rows: 2000000}
+    fields:
+      - {name: ts_code,        type: string}
+      - {name: trade_date,     type: date}
+      - {name: open,           type: float64}
+      - {name: high,           type: float64}
+      - {name: low,            type: float64}
+      - {name: close,          type: float64}
+      - {name: pre_close,      type: float64}
+      - {name: change,         type: float64}
+      - {name: pct_chg,        type: float64, unit: percent}
+      - {name: vol,            type: float64, unit: hand, desc: 成交量(手)}
+      - {name: amount,         type: float64, unit: k_cny, desc: 成交额(千元)}
+      - {name: turnover_rate,  type: float64, unit: percent}
+      - {name: turnover_rate_f, type: float64, unit: percent}
+      - {name: volume_ratio,   type: float64}
+      - {name: pe,             type: float64}
+      - {name: pe_ttm,         type: float64}
+      - {name: pb,             type: float64}
+      - {name: ps,             type: float64}
+      - {name: ps_ttm,         type: float64}
+      - {name: dv_ratio,       type: float64}
+      - {name: dv_ttm,         type: float64}
+      - {name: total_share,    type: float64, unit: 10k_share, desc: 总股本(万股)}
+      - {name: float_share,    type: float64, unit: 10k_share}
+      - {name: free_share,     type: float64, unit: 10k_share}
+      - {name: total_mv,       type: float64, unit: 10k_cny, desc: 总市值(万元)}
+      - {name: circ_mv,        type: float64, unit: 10k_cny}
+
+  bars_1m:
+    description: 股票 1 分钟行情(未复权)
+    root: canonical/bars_1m
+    partitions: [market, year, month]
+    primary_key: [ts_code, trade_time]
+    sorted_by: [ts_code, trade_time]
+    writer: {row_group_rows: 8192, target_file_rows: 12000000}
+    fields:
+      - {name: ts_code,    type: string}
+      - {name: trade_time, type: timestamp, desc: 分钟 Bar 结束时间}
+      - {name: open,      type: float64}
+      - {name: high,      type: float64}
+      - {name: low,       type: float64}
+      - {name: close,     type: float64}
+      - {name: vol,       type: float64, unit: hand, desc: 成交量(手)}
+      - {name: amount,    type: float64, unit: k_cny, desc: 成交额(千元)}
+
+  adj_factor:
+    description: 复权因子(后复权)
+    root: canonical/adj_factor
+    partitions: [factor_type, year]
+    primary_key: [ts_code, trade_date]
+    sorted_by: [ts_code, trade_date]
+    writer: {row_group_rows: 8192, target_file_rows: 4000000}
+    fields:
+      - {name: ts_code,    type: string}
+      - {name: trade_date, type: date}
+      - {name: adj_factor, type: float64}
+
+  corporate_actions:
+    description: 公司行动(除权除息事件,PTrade 风格字段)
+    root: canonical/corporate_actions
+    partitions: [year]
+    primary_key: [ts_code, ex_date]
+    sorted_by: [ts_code, ex_date]
+    writer: {row_group_rows: 8192, target_file_rows: 4000000}
+    fields:
+      - {name: ts_code,         type: string}
+      - {name: ex_date,         type: date}
+      - {name: allotted_ps,     type: float64, desc: 每股送转}
+      - {name: rationed_ps,     type: float64, desc: 每股配股}
+      - {name: rationed_px,     type: float64, desc: 配股价}
+      - {name: bonus_ps,        type: float64, desc: 每股分红(税前)}
+      - {name: exer_forward_a,  type: float64}
+      - {name: exer_forward_b,  type: float64}
+      - {name: exer_backward_a, type: float64}
+      - {name: exer_backward_b, type: float64}
+
+  stock_basic:
+    description: 股票基础信息(全量快照,按 list_status 分版本)
+    root: canonical/stock_basic
+    partitions: []
+    primary_key: [ts_code]
+    sorted_by: [ts_code]
+    writer: {row_group_rows: 8192, target_file_rows: 2000000}
+    fields:
+      - {name: ts_code,     type: string}
+      - {name: symbol,      type: string}
+      - {name: name,        type: string}
+      - {name: area,        type: string}
+      - {name: industry,    type: string}
+      - {name: fullname,    type: string}
+      - {name: enname,      type: string}
+      - {name: cnspell,     type: string}
+      - {name: market,      type: string, desc: 市场类型(主板/创业板/科创板/CDR/北交所)}
+      - {name: exchange,    type: string}
+      - {name: curr_type,   type: string}
+      - {name: list_status, type: string, desc: L上市 D退市 P暂停上市}
+      - {name: list_date,   type: date}
+      - {name: delist_date, type: date}
+      - {name: is_hs,       type: string, desc: 是否沪深港通标的}
+      - {name: act_name,    type: string}
+      - {name: act_ent_type, type: string}
+
+  trade_cal:
+    description: 交易日历
+    root: canonical/trade_cal
+    partitions: []
+    primary_key: [exchange, cal_date]
+    sorted_by: [cal_date]
+    writer: {row_group_rows: 8192, target_file_rows: 4000000}
+    fields:
+      - {name: exchange,       type: string}
+      - {name: cal_date,       type: date}
+      - {name: is_open,        type: int64, desc: 是否交易 0休市 1交易}
+      - {name: pretrade_date,  type: date}
+
+  stk_limit:
+    description: 每日涨跌停价格
+    root: canonical/stk_limit
+    partitions: [year]
+    primary_key: [ts_code, trade_date]
+    sorted_by: [ts_code, trade_date]
+    writer: {row_group_rows: 8192, target_file_rows: 4000000}
+    fields:
+      - {name: ts_code,    type: string}
+      - {name: trade_date, type: date}
+      - {name: pre_close,  type: float64}
+      - {name: up_limit,   type: float64}
+      - {name: down_limit, type: float64}
+
+  suspend_d:
+    description: 每日停复牌信息
+    root: canonical/suspend_d
+    partitions: [year]
+    primary_key: [ts_code, trade_date]
+    sorted_by: [ts_code, trade_date]
+    writer: {row_group_rows: 8192, target_file_rows: 4000000}
+    fields:
+      - {name: ts_code,          type: string}
+      - {name: trade_date,       type: date}
+      - {name: suspend_timing,   type: string}
+      - {name: suspend_type,     type: string}
+
+  namechange:
+    description: 股票名称变更
+    root: canonical/namechange
+    partitions: [year]
+    primary_key: [ts_code, start_date]
+    sorted_by: [ts_code, start_date]
+    writer: {row_group_rows: 8192, target_file_rows: 4000000}
+    fields:
+      - {name: ts_code,       type: string}
+      - {name: name,          type: string}
+      - {name: start_date,    type: date}
+      - {name: end_date,      type: date}
+      - {name: ann_date,      type: date}
+      - {name: change_reason, type: string}
+
+  index_basic:
+    description: 指数基本信息(全量快照)
+    root: canonical/index_basic
+    partitions: []
+    primary_key: [ts_code]
+    sorted_by: [ts_code]
+    writer: {row_group_rows: 8192, target_file_rows: 2000000}
+    fields:
+      - {name: ts_code,    type: string}
+      - {name: name,       type: string}
+      - {name: fullname,   type: string}
+      - {name: market,     type: string}
+      - {name: publisher,  type: string}
+      - {name: index_type, type: string}
+      - {name: category,   type: string}
+      - {name: base_date,  type: date}
+      - {name: base_point, type: float64}
+      - {name: list_date,  type: date}
+
+  index_daily:
+    description: 指数日线行情
+    root: canonical/index_daily
+    partitions: [year]
+    primary_key: [ts_code, trade_date]
+    sorted_by: [ts_code, trade_date]
+    writer: {row_group_rows: 8192, target_file_rows: 4000000}
+    fields:
+      - {name: ts_code,    type: string}
+      - {name: trade_date, type: date}
+      - {name: close,      type: float64}
+      - {name: open,       type: float64}
+      - {name: high,       type: float64}
+      - {name: low,        type: float64}
+      - {name: pre_close,  type: float64}
+      - {name: change,     type: float64}
+      - {name: pct_chg,    type: float64, unit: percent}
+      - {name: vol,        type: float64, unit: hand}
+      - {name: amount,     type: float64, unit: k_cny}

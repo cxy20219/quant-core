@@ -1,0 +1,15 @@
+# 构建产物
+bin/
+*.exe
+
+# 数据湖(本地测试湖与大湖均不入库)
+lake/
+lake-test/
+/data/
+
+# 编辑器与系统
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

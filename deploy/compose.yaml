@@ -1,0 +1,43 @@
+# quant-core 数据服务 docker compose 定义。
+#
+# 部署位置:/vol1/quant-core/compose.yaml
+# 数据外挂:  /vol1/quant-core/data  -> 容器内 /data (数据湖,不打包进镜像)
+# 配置外挂:  /vol1/quant-core/etc   -> 容器内 /etc/quant-core (注册表与令牌)
+#
+# 常用命令:
+#   docker compose up -d
+#   docker compose logs -f
+#   docker compose pull && docker compose up -d
+
+services:
+  quantd:
+    image: quant-core:latest
+    container_name: quantd
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      # 数据湖外挂;容器只读挂载,导入操作在宿主机执行(quantd migrate/import)
+      - /vol1/quant-core/data:/data
+      # 注册表覆盖(如维护自定义数据集);文件不存在时回退镜像内置注册表
+      - /vol1/quant-core/etc:/etc/quant-core:ro
+    environment:
+      - TZ=Asia/Shanghai
+      # 非空时开启 token 鉴权,逗号分隔;留空则匿名可访问(仅限可信内网)
+      - QUANTD_TOKENS=${QUANTD_TOKENS:-}
+    command:
+      - serve
+      - --lake=/data/lake
+      - --registry=/etc/quant-core/datasets.yaml
+      - --listen=:8000
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8000/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"

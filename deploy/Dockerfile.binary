@@ -1,0 +1,25 @@
+# syntax=docker/dockerfile:1
+#
+# quant-core 数据服务镜像。
+#
+# 设计约束:
+#   - 镜像只装二进制与注册表,数据湖一律外挂(compose 里挂 /data)。
+#   - 交叉编译好的 linux/amd64 二进制直接 COPY,镜像内不做编译,保持精简。
+#   - 构建前置步骤:make build-linux(或手动 CGO_ENABLED=0 GOOS=linux go build)。
+#
+# 两种构建方式:
+#   A. 用预编译二进制(推荐,镜像最小):docker build -f deploy/Dockerfile.binary -t quant-core .
+#   B. 容器内编译(无需本机 Go):docker build -f deploy/Dockerfile -t quant-core .
+
+FROM alpine:3.21 AS base
+RUN apk add --no-cache ca-certificates tzdata
+ENV TZ=Asia/Shanghai
+WORKDIR /app
+COPY bin/quantd-linux-amd64 /app/quantd
+COPY schemas/ /app/schemas/
+RUN chmod +x /app/quantd
+EXPOSE 8000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+  CMD wget -qO- http://127.0.0.1:8000/healthz >/dev/null 2>&1 || exit 1
+ENTRYPOINT ["/app/quantd"]
+CMD ["serve", "--lake", "/data", "--registry", "/app/schemas/datasets.yaml", "--listen", ":8000"]
