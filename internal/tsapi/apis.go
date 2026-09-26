@@ -37,8 +37,11 @@ func DefaultAPIs() map[string]*API {
 			Dataset:      "adj_factor",
 			BuildFilter:  codeDateFilter,
 			SelectFields: []string{"ts_code", "trade_date", "adj_factor"},
-			DefaultLimit: 6000,
-			MaxLimit:     10000,
+			// 默认只取后复权因子(tushare adj_factor 语义);可传 factor_type=qfq 取前复权。
+			FixedPartitions: map[string]string{"factor_type": "hfq"},
+			PartitionParams: map[string]string{"factor_type": "factor_type"},
+			DefaultLimit:    6000,
+			MaxLimit:        10000,
 		},
 		"stk_mins": {
 			Name:         "stk_mins",

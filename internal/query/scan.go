@@ -36,6 +36,9 @@ type Request struct {
 	Columns []string
 	Limit   int
 	Offset  int
+	// Partitions 直接限定分区键取值(如 {"factor_type": {"hfq"}}),
+	// 用于过滤不作为字段暴露的分区维度。
+	Partitions map[string][]string
 }
 
 // batchRows 是每次从 parquet 读取的行数。
@@ -144,7 +147,7 @@ func (s *Scanner) Open(req Request) (*Cursor, error) {
 	}
 
 	// 分区过滤 + 文件枚举
-	accept, err := partitionAccept(ds, c.filter)
+	accept, err := partitionAccept(ds, c.filter, req.Partitions)
 	if err != nil {
 		return nil, err
 	}
@@ -433,9 +436,9 @@ func (c *Cursor) convertRow(prow parquet.Row) ([]schema.Value, error) {
 	return row, nil
 }
 
-// partitionAccept 根据过滤条件推导分区剪枝函数。
-func partitionAccept(ds *schema.Dataset, filter *Filter) (func(map[string]string, int) bool, error) {
-	if filter == nil {
+// partitionAccept 根据过滤条件与显式分区限定推导分区剪枝函数。
+func partitionAccept(ds *schema.Dataset, filter *Filter, explicit map[string][]string) (func(map[string]string, int) bool, error) {
+	if filter == nil && len(explicit) == 0 {
 		return nil, nil
 	}
 	// 时间范围缺省端的饱和边界(约 1860 ~ 2243 年),避免无限范围。
@@ -447,56 +450,69 @@ func partitionAccept(ds *schema.Dataset, filter *Filter) (func(map[string]string
 	minDays, maxDays := int64(daysMin), int64(daysMax)
 	hasRange := false
 	static := map[string]map[string]bool{}
-	for _, pred := range filter.Preds {
-		fieldName := ds.Fields[pred.Field].Name
-		if ds.HasPartition(fieldName) {
-			if static[fieldName] == nil {
-				static[fieldName] = map[string]bool{}
+	for key, values := range explicit {
+		if !ds.HasPartition(key) {
+			return nil, fmt.Errorf("dataset %s: %q is not a partition key", ds.Name, key)
+		}
+		if static[key] == nil {
+			static[key] = map[string]bool{}
+		}
+		for _, v := range values {
+			static[key][v] = true
+		}
+	}
+	if filter != nil {
+		for _, pred := range filter.Preds {
+			fieldName := ds.Fields[pred.Field].Name
+			if ds.HasPartition(fieldName) {
+				if static[fieldName] == nil {
+					static[fieldName] = map[string]bool{}
+				}
+				switch pred.Op {
+				case OpEq:
+					static[fieldName][pred.Value.S] = true
+				case OpIn:
+					for _, v := range pred.Values {
+						static[fieldName][v.S] = true
+					}
+				}
+			}
+			if fieldName != timeField || timeField == "" {
+				continue
+			}
+			ft := ds.Fields[pred.Field].Type
+			toDays := func(v schema.Value) int64 {
+				if ft == schema.TypeTimestamp {
+					return v.I / microsPerDay
+				}
+				return v.I
 			}
 			switch pred.Op {
-			case OpEq:
-				static[fieldName][pred.Value.S] = true
-			case OpIn:
-				for _, v := range pred.Values {
-					static[fieldName][v.S] = true
-				}
-			}
-		}
-		if fieldName != timeField || timeField == "" {
-			continue
-		}
-		ft := ds.Fields[pred.Field].Type
-		toDays := func(v schema.Value) int64 {
-			if ft == schema.TypeTimestamp {
-				return v.I / microsPerDay
-			}
-			return v.I
-		}
-		switch pred.Op {
-		case OpGte:
-			if d := toDays(pred.Value); d > minDays {
-				minDays = d
-			}
-			hasRange = true
-		case OpLte:
-			if d := toDays(pred.Value); d < maxDays {
-				maxDays = d
-			}
-			hasRange = true
-		case OpEq:
-			minDays, maxDays = toDays(pred.Value), toDays(pred.Value)
-			hasRange = true
-		case OpIn:
-			for i, v := range pred.Values {
-				d := toDays(v)
-				if i == 0 || d < minDays {
+			case OpGte:
+				if d := toDays(pred.Value); d > minDays {
 					minDays = d
 				}
-				if i == 0 || d > maxDays {
+				hasRange = true
+			case OpLte:
+				if d := toDays(pred.Value); d < maxDays {
 					maxDays = d
 				}
+				hasRange = true
+			case OpEq:
+				minDays, maxDays = toDays(pred.Value), toDays(pred.Value)
+				hasRange = true
+			case OpIn:
+				for i, v := range pred.Values {
+					d := toDays(v)
+					if i == 0 || d < minDays {
+						minDays = d
+					}
+					if i == 0 || d > maxDays {
+						maxDays = d
+					}
+				}
+				hasRange = true
 			}
-			hasRange = true
 		}
 	}
 	if !hasRange && len(static) == 0 {

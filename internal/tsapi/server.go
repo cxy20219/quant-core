@@ -34,6 +34,10 @@ type API struct {
 	SelectFields []string
 	// Transforms 是输出前的单位换算。
 	Transforms []Transform
+	// FixedPartitions 是固定的分区限定(如 adj_factor 只取 hfq)。
+	FixedPartitions map[string]string
+	// PartitionParams 把请求参数映射为分区限定(参数名 -> 分区键)。
+	PartitionParams map[string]string
 	// DefaultLimit 是未指定 limit 时的行数上限,MaxLimit 是单次请求上限。
 	DefaultLimit int
 	MaxLimit     int
@@ -271,11 +275,12 @@ func (s *Server) execute(api *API, req *apiRequest) (*apiData, error) {
 	}
 
 	cur, err := s.scanner().Open(query.Request{
-		Dataset: api.Dataset,
-		Filter:  filter,
-		Columns: outFields,
-		Limit:   limit + 1, // 多读一行判断 has_more
-		Offset:  offset,
+		Dataset:    api.Dataset,
+		Filter:     filter,
+		Columns:    outFields,
+		Limit:      limit + 1, // 多读一行判断 has_more
+		Offset:     offset,
+		Partitions: api.resolvePartitions(params),
 	})
 	if err != nil {
 		return nil, err
@@ -315,6 +320,23 @@ func (api *API) applyTransform(name string, v schema.Value) schema.Value {
 		}
 	}
 	return v
+}
+
+// resolvePartitions 计算请求的分区限定:固定值兜底,参数可覆盖。
+func (api *API) resolvePartitions(params Params) map[string][]string {
+	if len(api.FixedPartitions) == 0 && len(api.PartitionParams) == 0 {
+		return nil
+	}
+	out := map[string][]string{}
+	for key, value := range api.FixedPartitions {
+		out[key] = []string{value}
+	}
+	for param, key := range api.PartitionParams {
+		if v := params.Str(param); v != "" {
+			out[key] = []string{v}
+		}
+	}
+	return out
 }
 
 // resolveFields 计算输出字段:接口默认字段与请求 fields 的交集,保持请求顺序。

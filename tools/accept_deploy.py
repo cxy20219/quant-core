@@ -65,8 +65,11 @@ def main() -> int:
     df = check("daily 600000.SH 2024 全年", lambda: pro.daily(ts_code="600000.SH", start_date="20240101", end_date="20241231"), expect_rows=242)
     if df is not None and len(df):
         row = df.iloc[0]
-        if row["trade_date"] != "20240102" or abs(row["close"] - 7.36) > 0.01:
-            print(f"    首行校验: {row['trade_date']} close={row['close']}")
+        if row["trade_date"] != "20240102" or not (3 < row["close"] < 30) or row["vol"] <= 0:
+            failures.append(f"daily first row sanity: {row.to_dict()}")
+            print(f"    FAIL 首行合理性: {row['trade_date']} close={row['close']} vol={row['vol']}")
+        else:
+            print(f"    首行 {row['trade_date']}: close={row['close']} vol={row['vol']} amount={row['amount']}")
 
     check("daily 全市场单日", lambda: pro.daily(trade_date="20240102"), min_rows=5000)
     check("daily_basic 单日单票", lambda: pro.daily_basic(ts_code="600000.SH", trade_date="20240102"), expect_rows=1)
@@ -75,11 +78,18 @@ def main() -> int:
     check("stk_mins 单月", lambda: pro.stk_mins(ts_code="600000.SH", freq="1min", start_date="2024-01-01 09:00:00", end_date="2024-01-31 15:30:00"), min_rows=4000)
     check("daily 十年跨度", lambda: pro.daily(ts_code="600000.SH", start_date="20150101", end_date="20241231"), min_rows=2000)
 
-    # 单位校验:分钟线 vol 单位为股(手×100)
-    df = pro.stk_mins(ts_code="600000.SH", freq="1min", start_date="2024-01-02 09:30:00", end_date="2024-01-02 09:31:00")
-    if len(df) and df.iloc[0]["vol"] > 100000:
-        print("NOTE vol 单位可能未按股输出:", df.iloc[0]["vol"])
-        failures.append("stk_mins vol unit")
+    # 单位交叉校验:分钟线 vol 为股(手×100),应约等于当日日线 vol(手)×100
+    day = pro.daily(ts_code="600000.SH", trade_date="20240102")
+    mins = pro.stk_mins(ts_code="600000.SH", freq="1min", start_date="2024-01-02 09:00:00", end_date="2024-01-02 15:30:00")
+    if len(day) and len(mins):
+        daily_shares = float(day.iloc[0]["vol"]) * 100
+        minute_shares = float(mins["vol"].sum())
+        diff = abs(daily_shares - minute_shares) / daily_shares
+        if diff > 0.05:
+            failures.append(f"stk_mins vol 与日线不一致: daily={daily_shares:.0f} minute={minute_shares:.0f}")
+            print(f"FAIL 分钟线 vol 校验: daily={daily_shares:.0f} minute={minute_shares:.0f} diff={diff:.1%}")
+        else:
+            print(f"OK   分钟线 vol 校验(股): daily={daily_shares:.0f} minute={minute_shares:.0f} diff={diff:.1%}")
 
     if args.full:
         print("\n== 延迟基准 ==")

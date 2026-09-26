@@ -174,6 +174,60 @@ func TestStkMinsUnitTransform(t *testing.T) {
 	}
 }
 
+func TestAdjFactorDefaultsToHfq(t *testing.T) {
+	reg, err := schema.Load(filepath.Join("..", "..", "schemas", "datasets.yaml"))
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	l := lake.New(t.TempDir(), reg)
+	ds, _ := reg.Get("adj_factor")
+
+	write := func(factorType string, value float64) {
+		dir := filepath.Join(l.Dir(ds), "factor_type="+factorType, "year=2024")
+		pw, err := lake.NewPartWriter(ds, dir)
+		if err != nil {
+			t.Fatalf("writer: %v", err)
+		}
+		row := make([]schema.Value, len(ds.Fields))
+		for i := range row {
+			row[i] = schema.NullValue()
+		}
+		set := func(name string, v schema.Value) {
+			i, _ := ds.FieldIndex(name)
+			row[i] = v
+		}
+		set("ts_code", schema.Str("600000.SH"))
+		set("trade_date", schema.Date(19724))
+		set("adj_factor", schema.Float(value))
+		if err := pw.WriteRow(row); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		if _, err := pw.Close(); err != nil {
+			t.Fatalf("close: %v", err)
+		}
+	}
+	write("hfq", 10.5)
+	write("qfq", 1.05)
+
+	srv := NewServer(l)
+	resp := post(t, srv, `{"api_name":"adj_factor","params":{"ts_code":"600000.SH","start_date":"20240101","end_date":"20240110"}}`)
+	data := resp["data"].(map[string]any)
+	items := data["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("want 1 item (hfq only), got %d (%v)", len(items), resp)
+	}
+	if got := items[0].([]any)[2].(float64); got != 10.5 {
+		t.Errorf("adj_factor = %v, want 10.5 (hfq)", got)
+	}
+
+	// 显式请求 qfq 应能取到
+	resp = post(t, srv, `{"api_name":"adj_factor","params":{"ts_code":"600000.SH","factor_type":"qfq"}}`)
+	items = resp["data"].(map[string]any)["items"].([]any)
+	if len(items) != 1 || items[0].([]any)[2].(float64) != 1.05 {
+		t.Fatalf("qfq request failed: %v", resp)
+	}
+}
+
 func TestUnknownAPIFails(t *testing.T) {
 	srv := NewServer(setupLake(t))
 	resp := post(t, srv, `{"api_name":"not_exists","params":{}}`)
