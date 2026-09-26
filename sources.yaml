@@ -1,0 +1,70 @@
+# quant-core 数据源插件注册表。
+#
+# 装载/卸载:
+#   - 新增源  = 在 sources 下增加一段配置(或放一个新的 exec 插件脚本);
+#   - 卸载源  = disabled: true(保留配置便于恢复)或直接删除配置段;
+#   - 换源    = 调整 bindings 中该数据集的源顺序(按序降级)。
+# 每次 import/check 命令都会重新加载本文件,不需要重启服务。
+#
+# 密钥统一用 ${ENV} 引用,实际值放项目根目录 .env(已 gitignore)或环境变量。
+# 当前可用源:tushare 双源中转(A/B 站,免官方 token)。
+version: 1
+
+sources:
+  # B 站:pcd.mobcvb.cn Tushare Relay(298 接口全集,下划线命名,自带 probe/catalog)
+  relay-b:
+    kind: tushare-http
+    description: pcd.mobcvb.cn Tushare Relay(接口全、下划线命名、5 行样例探针)
+    base_url: https://pcd.mobcvb.cn/tushare/pro/
+    method: GET
+    api_naming: underscore
+    auth:
+      style: header
+      header: X-API-Key
+      key: "${QUANT_RELAY_B_KEY}"
+    # 不启用减半:中转站 503 多为瞬时错误,减半会拿到被截断的数据;截断由导入器检测
+    limit: {default: 10000, max: 10000, min: 600}
+    tls: {insecure_skip_verify: true}
+    probe: {detect: true}
+    # 重试策略:同 limit 先重试一次,连续失败才减半;次数要覆盖多级减半
+    retry: {max: 8, backoff_ms: 1200}
+    timeout_ms: 30000
+
+  # A 站:datahubco 中转(87 接口,B 站子集,连字符命名,缺参报错即说明书)
+  relay-a:
+    kind: tushare-http
+    description: datahubco 中转(连字符命名、缺参报错、limit 硬上限 5000)
+    base_url: http://datahubco.com/app-api/openapi/v1/tushare/
+    method: GET
+    api_naming: hyphen
+    auth:
+      style: header
+      header: X-API-Key
+      key: "${QUANT_RELAY_A_KEY}"
+    # A 站 limit 为硬上限 5000,切片设计已保证单次不超限
+    limit: {default: 5000, max: 5000, min: 500}
+    retry: {max: 2, backoff_ms: 800}
+    timeout_ms: 30000
+
+  # 官方 Tushare Pro(需要有效 token 与积分权限;默认禁用,填入 token 后启用)
+  tushare-official:
+    kind: tushare-http
+    description: Tushare Pro 官方(POST + token;需要有效 token)
+    base_url: https://api.tushare.pro
+    method: POST
+    api_naming: underscore
+    auth: {style: token_body, key: "${TUSHARE_TOKEN}"}
+    limit: {default: 5000, max: 6000, min: 500}
+    retry: {max: 2, backoff_ms: 1000}
+    timeout_ms: 30000
+    disabled: true
+
+# 数据集 → 源优先级(降级链)。import 默认按此顺序尝试,前一个失败自动切下一个。
+bindings:
+  stock_basic: [relay-b, relay-a]
+  trade_cal: [relay-b, relay-a]
+  index_basic: [relay-b, relay-a]
+  stk_limit: [relay-b, relay-a]
+  suspend_d: [relay-b, relay-a]
+  namechange: [relay-b, relay-a]
+  index_daily: [relay-b, relay-a]

@@ -3,7 +3,9 @@
 // 子命令:
 //
 //	quantd serve   --lake <dir> --registry <yaml> --listen :8000
-//	quantd migrate --src <old-lake> --lake <dir> [--dataset bars_daily] [--year 2024]
+//	quantd migrate --src <old-lake> --lake <dir> [--dataset bars_daily] [--year 2024] [--jobs 8]
+//	quantd import  --dataset stock_basic [--source relay-b] [--start 20240101] [--end 20240131]
+//	quantd source  list|check [name]
 //	quantd verify  --lake <dir> [--dataset bars_daily]
 //	quantd apis    --registry <yaml>
 package main
@@ -25,12 +27,13 @@ import (
 	"quant-core/internal/ingest"
 	"quant-core/internal/lake"
 	"quant-core/internal/schema"
-	"quant-core/internal/source/tushare"
+	"quant-core/internal/source"
 	"quant-core/internal/tsapi"
 )
 
 func main() {
 	log.SetFlags(log.LstdFlags)
+	loadDotEnv(".env")
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)
@@ -40,12 +43,16 @@ func main() {
 		cmdServe(os.Args[2:])
 	case "migrate":
 		cmdMigrate(os.Args[2:])
+	case "import":
+		cmdImport(os.Args[2:])
+	case "source":
+		cmdSource(os.Args[2:])
+	case "dedupe":
+		cmdDedupe(os.Args[2:])
 	case "verify":
 		cmdVerify(os.Args[2:])
 	case "apis":
 		cmdAPIs(os.Args[2:])
-	case "import":
-		cmdImport(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -58,16 +65,59 @@ func usage() {
 用法:
   quantd serve   --lake <dir> --registry <yaml> --listen :8000
   quantd migrate --src <old-lake> --lake <dir> [--dataset bars_daily] [--year 2024] [--jobs 8]
-  quantd import  --source tushare --dataset stock_basic --lake <dir> [--start 20240101 --end 20240131] [--replace]
+  quantd import  --dataset stock_basic [--source relay-b] [--start 20240101] [--end 20240131] [--replace]
+  quantd source  list | check [name]
   quantd verify  --lake <dir> [--dataset bars_daily]
   quantd apis    --registry <yaml>
 `)
+}
+
+// loadDotEnv 读取 .env(不入库)并注入环境变量;已存在的环境变量优先。
+func loadDotEnv(path string) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		value = strings.Trim(strings.TrimSpace(value), `"'`)
+		if key == "" {
+			continue
+		}
+		if _, exists := os.LookupEnv(key); !exists {
+			_ = os.Setenv(key, value)
+		}
+	}
 }
 
 func loadRegistry(path string) *schema.Registry {
 	reg, err := schema.Load(path)
 	if err != nil {
 		log.Fatalf("load registry %s: %v", path, err)
+	}
+	return reg
+}
+
+func loadSourceRegistry(path string, logf func(string, ...any)) *source.Registry {
+	reg, err := source.LoadRegistry(path)
+	if err != nil {
+		log.Fatalf("load sources %s: %v", path, err)
+	}
+	if logf != nil {
+		reg.SetSourceLoggers(logf)
+		for _, info := range reg.Infos() {
+			if info.Err != nil {
+				logf("源 %s 不可用: %v", info.Name, info.Err)
+			}
+		}
 	}
 	return reg
 }
@@ -156,6 +206,304 @@ func migrationNames(migrations []*ingest.Migration) []string {
 	return names
 }
 
+// cmdImport 从数据源插件导入数据集,按 bindings 顺序自动降级。
+func cmdImport(args []string) {
+	fs := flag.NewFlagSet("import", flag.ExitOnError)
+	dataset := fs.String("dataset", "", "数据集名(空则列出全部)")
+	sourceName := fs.String("source", "", "指定数据源(默认用 sources.yaml 的 bindings 降级链)")
+	lakeDir := fs.String("lake", "lake", "新湖根目录")
+	registryPath := fs.String("registry", filepath.Join("schemas", "datasets.yaml"), "数据集注册表")
+	sourcesPath := fs.String("sources", filepath.Join("sources.yaml"), "数据源注册表")
+	start := fs.String("start", "", "起始日期 YYYYMMDD(区间模式必需)")
+	end := fs.String("end", "", "结束日期 YYYYMMDD(区间模式必需)")
+	replace := fs.Bool("replace", false, "快照模式先清空目标分区")
+	_ = fs.Parse(args)
+
+	if *dataset == "" {
+		for _, spec := range ingest.Specs() {
+			log.Printf("可用数据集: %-16s mode=%-12s api=%s", spec.Dataset, spec.Mode, spec.APIName)
+		}
+		return
+	}
+	spec, err := ingest.SpecByName(*dataset)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	reg := loadRegistry(*registryPath)
+	l := lake.New(*lakeDir, reg)
+	opts := ingest.ImportOptions{Replace: *replace}
+	if *start != "" {
+		days, err := schema.ParseDate(*start)
+		if err != nil {
+			log.Fatalf("start: %v", err)
+		}
+		opts.StartDate = schema.TimeFromDays(days)
+	}
+	if *end != "" {
+		days, err := schema.ParseDate(*end)
+		if err != nil {
+			log.Fatalf("end: %v", err)
+		}
+		opts.EndDate = schema.TimeFromDays(days)
+	}
+
+	sources := loadSourceRegistry(*sourcesPath, log.Printf)
+	defer sources.Close()
+
+	var chain []source.Source
+	if *sourceName != "" {
+		src, err := sources.Get(*sourceName)
+		if err != nil {
+			log.Fatalf("source: %v", err)
+		}
+		chain = []source.Source{src}
+	} else {
+		chain, err = sources.Resolve(*dataset)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	// 多源时组成按调用降级的复合源:单次瞬时故障不会导致整批换源
+	active := chain[0]
+	if len(chain) > 1 {
+		names := make([]string, 0, len(chain))
+		for _, src := range chain {
+			names = append(names, src.Name())
+		}
+		fb, err := source.NewFallback(strings.Join(names, "→"), chain)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fb.SetLogger(log.Printf)
+		active = fb
+	}
+	importer := &ingest.Importer{
+		Source: active,
+		Lake:   l,
+		Logger: lake.NewBatchLogger(*lakeDir),
+		Logf:   log.Printf,
+	}
+	log.Printf("importing %s from source %s (kind=%s) ...", *dataset, active.Name(), active.Kind())
+	started := time.Now()
+	rows, err := importer.Import(context.Background(), spec, opts)
+	if err != nil {
+		log.Fatalf("import %s: %v", *dataset, err)
+	}
+	log.Printf("dataset %s imported: %d rows in %s (source=%s)",
+		*dataset, rows, time.Since(started).Round(time.Second), active.Name())
+}
+
+// cmdSource 管理数据源插件。
+func cmdSource(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "用法: quantd source list|check [name] [--sources sources.yaml]")
+		os.Exit(2)
+	}
+	switch args[0] {
+	case "list":
+		fs := flag.NewFlagSet("source list", flag.ExitOnError)
+		sourcesPath := fs.String("sources", filepath.Join("sources.yaml"), "数据源注册表")
+		_ = fs.Parse(args[1:])
+		reg := loadSourceRegistry(*sourcesPath, nil)
+		defer reg.Close()
+		fmt.Printf("config: %s\n\n", *sourcesPath)
+		fmt.Printf("%-18s %-14s %-8s %s\n", "SOURCE", "KIND", "STATUS", "DESCRIPTION")
+		for _, info := range reg.Infos() {
+			status := "ready"
+			switch {
+			case info.Disabled:
+				status = "disabled"
+			case info.Err != nil:
+				status = "error"
+			}
+			fmt.Printf("%-18s %-14s %-8s %s\n", info.Name, info.Kind, status, info.Description)
+			if info.Err != nil {
+				fmt.Printf("%-18s %s\n", "", "└─ "+info.Err.Error())
+			}
+		}
+		fmt.Printf("\nbindings (数据集 → 源降级链):\n")
+		datasets := make([]string, 0)
+		bindings := reg.Bindings()
+		for dataset := range bindings {
+			datasets = append(datasets, dataset)
+		}
+		sort.Strings(datasets)
+		for _, dataset := range datasets {
+			fmt.Printf("  %-16s %s\n", dataset, strings.Join(bindings[dataset], " → "))
+		}
+	case "check":
+		fs := flag.NewFlagSet("source check", flag.ExitOnError)
+		sourcesPath := fs.String("sources", filepath.Join("sources.yaml"), "数据源注册表")
+		api := fs.String("api", "trade_cal", "探活使用的接口")
+		_ = fs.Parse(args[1:])
+		reg := loadSourceRegistry(*sourcesPath, log.Printf)
+		defer reg.Close()
+		targets := fs.Args()
+		exitCode := 0
+		for _, info := range reg.Infos() {
+			if len(targets) > 0 && !contains(targets, info.Name) {
+				continue
+			}
+			if info.Disabled {
+				fmt.Printf("[skip] %-18s disabled\n", info.Name)
+				continue
+			}
+			if info.Err != nil {
+				fmt.Printf("[fail] %-18s %v\n", info.Name, info.Err)
+				exitCode = 1
+				continue
+			}
+			src, err := reg.Get(info.Name)
+			if err != nil {
+				fmt.Printf("[fail] %-18s %v\n", info.Name, err)
+				exitCode = 1
+				continue
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			started := time.Now()
+			result, err := src.Call(ctx, *api, map[string]any{
+				"exchange":   "SSE",
+				"start_date": "20240101",
+				"end_date":   "20240105",
+			}, "")
+			cancel()
+			if err != nil {
+				fmt.Printf("[fail] %-18s %v\n", info.Name, err)
+				exitCode = 1
+				continue
+			}
+			fmt.Printf("[ok]   %-18s kind=%-12s api=%s rows=%d count=%d %s\n",
+				info.Name, info.Kind, *api, len(result.Items), result.Count, time.Since(started).Round(time.Millisecond))
+		}
+		os.Exit(exitCode)
+	case "call":
+		fs := flag.NewFlagSet("source call", flag.ExitOnError)
+		sourcesPath := fs.String("sources", filepath.Join("sources.yaml"), "数据源注册表")
+		name := fs.String("name", "", "数据源名(必需)")
+		api := fs.String("api", "", "接口名(tushare 标准名,必需)")
+		fields := fs.String("fields", "", "列裁剪(逗号分隔)")
+		limit := fs.Int("limit", 0, "覆盖 limit")
+		var params paramList
+		fs.Var(&params, "param", "查询参数 k=v,可重复")
+		_ = fs.Parse(args[1:])
+		if *name == "" || *api == "" {
+			fmt.Fprintln(os.Stderr, "用法: quantd source call --name <源> --api <接口> [--param k=v ...] [--fields a,b] [--limit N]")
+			os.Exit(2)
+		}
+		reg := loadSourceRegistry(*sourcesPath, log.Printf)
+		defer reg.Close()
+		src, err := reg.Get(*name)
+		if err != nil {
+			log.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		callParams := map[string]any(params)
+		if *limit > 0 {
+			callParams["limit"] = *limit
+		}
+		started := time.Now()
+		result, err := src.Call(ctx, *api, callParams, *fields)
+		if err != nil {
+			log.Fatalf("call 失败: %v", err)
+		}
+		fmt.Printf("source=%s api=%s rows=%d count=%d has_more=%v 用时=%s\n",
+			*name, *api, len(result.Items), result.Count, result.HasMore, time.Since(started).Round(time.Millisecond))
+		if len(result.Items) > 0 {
+			fmt.Printf("fields: %v\n", result.Fields)
+			fmt.Printf("first : %v\n", result.Items[0])
+			fmt.Printf("last  : %v\n", result.Items[len(result.Items)-1])
+		}
+		if len(result.Meta) > 0 {
+			fmt.Printf("meta  : %v\n", result.Meta)
+		}
+	case "compare":
+		fs := flag.NewFlagSet("source compare", flag.ExitOnError)
+		sourcesPath := fs.String("sources", filepath.Join("sources.yaml"), "数据源注册表")
+		dataset := fs.String("dataset", "", "数据集名(用其 bindings 的源链,必需)")
+		api := fs.String("api", "", "接口名(默认取数据集规格的 api)")
+		fields := fs.String("fields", "", "列裁剪")
+		var params paramList
+		fs.Var(&params, "param", "查询参数 k=v,可重复")
+		_ = fs.Parse(args[1:])
+		if *dataset == "" {
+			fmt.Fprintln(os.Stderr, "用法: quantd source compare --dataset <数据集> [--param k=v ...]")
+			os.Exit(2)
+		}
+		apiName := *api
+		if apiName == "" {
+			spec, err := ingest.SpecByName(*dataset)
+			if err != nil {
+				log.Fatal(err)
+			}
+			apiName = spec.APIName
+			if *fields == "" && spec.Fields != "" {
+				*fields = spec.Fields
+			}
+		}
+		reg := loadSourceRegistry(*sourcesPath, log.Printf)
+		defer reg.Close()
+		chain, err := reg.Resolve(*dataset)
+		if err != nil {
+			log.Fatal(err)
+		}
+		type outcome struct {
+			name   string
+			rows   int
+			count  int64
+			first  []any
+			last   []any
+			fields []string
+			err    error
+		}
+		var outcomes []outcome
+		for _, src := range chain {
+			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+			result, err := src.Call(ctx, apiName, map[string]any(params), *fields)
+			cancel()
+			o := outcome{name: src.Name(), err: err}
+			if err == nil {
+				o.rows = len(result.Items)
+				o.count = result.Count
+				o.fields = result.Fields
+				if o.rows > 0 {
+					o.first = result.Items[0]
+					o.last = result.Items[o.rows-1]
+				}
+			}
+			outcomes = append(outcomes, o)
+		}
+		fmt.Printf("dataset=%s api=%s params=%v\n\n", *dataset, apiName, map[string]any(params))
+		for _, o := range outcomes {
+			if o.err != nil {
+				fmt.Printf("%-18s ERROR %v\n", o.name, o.err)
+				continue
+			}
+			fmt.Printf("%-18s rows=%-7d count=%-7d first=%v last=%v\n", o.name, o.rows, o.count, fmt.Sprint(o.first), fmt.Sprint(o.last))
+		}
+		if len(outcomes) == 2 && outcomes[0].err == nil && outcomes[1].err == nil {
+			a, b := outcomes[0], outcomes[1]
+			switch {
+			case a.rows != b.rows:
+				fmt.Printf("\n[注意] 两源行数不同: %s=%d vs %s=%d(排查语义差异,如 trade_cal 是否含休市日)\n",
+					a.name, a.rows, b.name, b.rows)
+			case a.count != b.count:
+				fmt.Printf("\n[注意] 行数相同但 count 不同: %d vs %d\n", a.count, b.count)
+			default:
+				fmt.Printf("\n[ok] 两源行数与 count 一致(%d 行)\n", a.rows)
+			}
+			if len(a.fields) > 0 && len(b.fields) > 0 && strings.Join(a.fields, ",") != strings.Join(b.fields, ",") {
+				fmt.Printf("[注意] 字段列表不同:\n  %s: %v\n  %s: %v\n", a.name, a.fields, b.name, b.fields)
+			}
+		}
+	default:
+		fmt.Fprintf(os.Stderr, "未知子命令 %q(可用 list/check/call/compare)\n", args[0])
+		os.Exit(2)
+	}
+}
+
 // verify 对每个数据集核对 manifest 记录行数与 part 文件实际行数。
 func cmdVerify(args []string) {
 	fs := flag.NewFlagSet("verify", flag.ExitOnError)
@@ -229,77 +577,6 @@ func verifyDataset(l *lake.Lake, logger *lake.BatchLogger, ds *schema.Dataset) e
 	return nil
 }
 
-func cmdImport(args []string) {
-	fs := flag.NewFlagSet("import", flag.ExitOnError)
-	source := fs.String("source", "", "数据源(当前支持 tushare)")
-	dataset := fs.String("dataset", "", "数据集名(默认该源全部)")
-	lakeDir := fs.String("lake", "lake", "新湖根目录")
-	registryPath := fs.String("registry", filepath.Join("schemas", "datasets.yaml"), "数据集注册表")
-	start := fs.String("start", "", "起始日期 YYYYMMDD(区间模式必需)")
-	end := fs.String("end", "", "结束日期 YYYYMMDD(区间模式必需)")
-	replace := fs.Bool("replace", false, "快照模式先清空目标分区")
-	token := fs.String("token", os.Getenv("TUSHARE_TOKEN"), "数据源令牌(默认读 TUSHARE_TOKEN)")
-	_ = fs.Parse(args)
-
-	if *source != "tushare" {
-		log.Fatalf("unsupported source %q (only tushare)", *source)
-	}
-	if *token == "" {
-		log.Fatal("missing token: pass --token or set TUSHARE_TOKEN")
-	}
-	if *dataset == "" {
-		specs := ingest.TushareSpecs()
-		for _, spec := range specs {
-			log.Printf("available tushare dataset: %-16s mode=%s api=%s", spec.Dataset, spec.Mode, spec.APIName)
-		}
-		return
-	}
-
-	reg := loadRegistry(*registryPath)
-	l := lake.New(*lakeDir, reg)
-	client := tushare.NewClient(*token)
-	client.Logf = log.Printf
-	client.Pause = 300 * time.Millisecond
-	importer := &ingest.TushareImporter{
-		Client: client,
-		Lake:   l,
-		Logger: lake.NewBatchLogger(*lakeDir),
-		Logf:   log.Printf,
-	}
-
-	opts := ingest.ImportOptions{Replace: *replace}
-	if *start != "" {
-		days, err := schema.ParseDate(*start)
-		if err != nil {
-			log.Fatalf("start: %v", err)
-		}
-		opts.StartDate = schema.TimeFromDays(days)
-	}
-	if *end != "" {
-		days, err := schema.ParseDate(*end)
-		if err != nil {
-			log.Fatalf("end: %v", err)
-		}
-		opts.EndDate = schema.TimeFromDays(days)
-	}
-
-	matched := false
-	for _, spec := range ingest.TushareSpecs() {
-		if spec.Dataset != *dataset {
-			continue
-		}
-		matched = true
-		rows, err := importer.Import(context.Background(), spec, opts)
-		if err != nil {
-			log.Fatalf("import %s: %v", spec.Dataset, err)
-		}
-		log.Printf("dataset %s imported: %d rows", spec.Dataset, rows)
-	}
-	if !matched {
-		log.Fatalf("unknown tushare dataset %q", *dataset)
-	}
-}
-
 func cmdAPIs(args []string) {
 	fs := flag.NewFlagSet("apis", flag.ExitOnError)
 	registryPath := fs.String("registry", filepath.Join("schemas", "datasets.yaml"), "数据集注册表")
@@ -317,4 +594,30 @@ func cmdAPIs(args []string) {
 		api := apis[name]
 		log.Printf("api %-12s -> dataset %-14s fields=%d", api.Name, api.Dataset, len(api.SelectFields))
 	}
+}
+
+func contains(list []string, v string) bool {
+	for _, item := range list {
+		if item == v {
+			return true
+		}
+	}
+	return false
+}
+
+// paramList 收集可重复的 --param k=v 参数。
+type paramList map[string]any
+
+func (p *paramList) String() string { return fmt.Sprint(map[string]any(*p)) }
+
+func (p *paramList) Set(value string) error {
+	key, val, ok := strings.Cut(value, "=")
+	if !ok {
+		return fmt.Errorf("参数格式应为 k=v: %q", value)
+	}
+	if *p == nil {
+		*p = map[string]any{}
+	}
+	(*p)[strings.TrimSpace(key)] = strings.TrimSpace(val)
+	return nil
 }

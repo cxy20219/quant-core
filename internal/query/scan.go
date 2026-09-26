@@ -542,6 +542,10 @@ func partitionAccept(ds *schema.Dataset, filter *Filter, explicit map[string][]s
 		if !ok {
 			return true
 		}
+		// 显式分区限定(如 dedupe 逐分区处理、接口固定 factor_type)优先
+		if allowed, seen := static[key]; seen && !allowed[value] {
+			return false
+		}
 		switch key {
 		case "year":
 			if hasRange && !years[value] {
@@ -556,9 +560,6 @@ func partitionAccept(ds *schema.Dataset, filter *Filter, explicit map[string][]s
 			}
 			return true
 		default:
-			if allowed, seen := static[key]; seen {
-				return allowed[value]
-			}
 			return true
 		}
 	}, nil

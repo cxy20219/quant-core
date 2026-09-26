@@ -379,3 +379,31 @@ func TestTimestampRoundTrip(t *testing.T) {
 		t.Errorf("month partition pruning failed: opened %d files", stats.FilesOpened)
 	}
 }
+
+func TestExplicitPartitionFilter(t *testing.T) {
+	reg := loadRegistry(t)
+	l := newTestLake(t, reg)
+	ds, _ := reg.Get("bars_daily")
+
+	writePartition(t, l, ds, map[string]string{"year": "2023"}, [][]schema.Value{
+		dailyRow(t, ds, "600000.SH", mustDate(t, "20230103"), 10.0, 1000),
+	})
+	writePartition(t, l, ds, map[string]string{"year": "2024"}, [][]schema.Value{
+		dailyRow(t, ds, "600000.SH", mustDate(t, "20240102"), 11.0, 1000),
+		dailyRow(t, ds, "600000.SH", mustDate(t, "20240103"), 11.5, 1000),
+	})
+
+	sc := NewScanner(l)
+	// 无过滤 + 显式限定 year=2024:必须只读到 2024 分区
+	rows, stats := collect(t, sc, Request{
+		Dataset:    "bars_daily",
+		Columns:    []string{"ts_code", "trade_date"},
+		Partitions: map[string][]string{"year": {"2024"}},
+	})
+	if len(rows) != 2 {
+		t.Fatalf("want 2 rows from year=2024, got %d (files=%d)", len(rows), stats.FilesOpened)
+	}
+	if stats.FilesOpened != 1 {
+		t.Errorf("explicit partition filter did not prune: files=%d", stats.FilesOpened)
+	}
+}

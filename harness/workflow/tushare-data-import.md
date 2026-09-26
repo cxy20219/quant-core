@@ -1,64 +1,115 @@
-# Tushare 数据导入流程(增量/快照)
+# 数据源插件与 Tushare 导入流程
 
 ## 适用场景
 
-用 `quantd import` 从 Tushare Pro 拉取数据写入新湖,覆盖:
-`stock_basic`、`trade_cal`、`index_basic`(快照)、`stk_limit`、`suspend_d`、`namechange`、`index_daily`(按月区间)。
+从外部数据源(tushare 官方或中转站)导入数据集到数据湖,或**频繁换源**时的装载/卸载/校验。
+
+## 核心机制(sources.yaml)
+
+数据源是**配置驱动的插件**,不需要重编译:
+
+```yaml
+sources:
+  relay-b:
+    kind: tushare-http          # 插件类型:内置 tushare-http / exec
+    base_url: https://pcd.mobcvb.cn/tushare/pro/
+    api_naming: underscore      # 接口命名:underscore(A 站用 hyphen)
+    auth: {style: header, header: X-API-Key, key: "${QUANT_RELAY_B_KEY}"}
+    limit: {default: 10000, max: 10000, min: 600}
+    tls: {insecure_skip_verify: true}   # B 站自签证书
+    probe: {detect: true}               # 识别"5 行样例"伪数据
+    retry: {max: 8, backoff_ms: 1200}
+  any-source:
+    disabled: true              # 卸载:保留配置但停用
+bindings:
+  stock_basic: [relay-b, relay-a]   # 数据集 → 源优先级(按调用降级)
+```
+
+- **装载**:新增一段配置;或写一个 `kind: exec` 的外部命令插件(任何语言,JSON over stdin/stdout)。
+- **卸载**:`disabled: true` 或删除配置段。
+- **换源**:调整 `bindings` 顺序;密钥用 `${ENV}` 引用,实际值放项目根 `.env`(已 gitignore)。
 
 ## 前置条件
 
-- **有效 Tushare token**(项目 `.env` 中两个历史 token 均已失效,需要向用户索取新的)。
-  接口地址默认 `https://api.tushare.pro`,客户端在 `internal/source/tushare`。
-- 目标数据集已在 `schemas/datasets.yaml` 注册。
-- 新湖目录可写。
-
-## 导入模式(选择依据)
-
-| 模式 | 适用 | 行为 |
-|---|---|---|
-| `snapshot` | 全量快照表(stock_basic/index_basic/trade_cal) | 一次拉全量,按分区字段切分,`--replace` 先清空目标分区 |
-| `month-range` | 支持 start_date/end_date 的时序接口(stk_limit 等) | 逐月查询,按行内日期字段写入对应年份分区;API 调用量约逐日的 1/20 |
-| `date-range` | 只支持单日 trade_date 的接口 | 逐日查询,写入当日年份分区(当前规格未使用,保留给单日接口) |
+- `.env` 中有对应密钥(当前:A 站 `QUANT_RELAY_A_KEY`、B 站 `QUANT_RELAY_B_KEY`)。
+- 部署环境下导入命令在 NAS 上执行:NAS 能直连两站,开发机可能被本机代理劫持(见 references/nas-server.md)。
 
 ## 关键步骤
 
-1. **查看可用数据集与模式**:
+1. **查看源与绑定**:
 
    ```bash
-   .\bin\quantd.exe import --source tushare
+   quantd source list
    ```
 
-2. **导入快照类**(示例):
+2. **探活**(默认用 trade_cal 打一发):
 
    ```bash
-   set TUSHARE_TOKEN=xxxx
-   .\bin\quantd.exe import --source tushare --dataset stock_basic --lake D:\quant-lake --replace
-   .\bin\quantd.exe import --source tushare --dataset trade_cal --lake D:\quant-lake --replace
+   quantd source check
    ```
 
-3. **导入区间类**(示例:涨跌停价 2024 全年):
+3. **单接口调试**(参数说明书式排查):
 
    ```bash
-   .\bin\quantd.exe import --source tushare --dataset stk_limit --start 20240101 --end 20241231 --lake D:\quant-lake
+   quantd source call --name relay-b --api stk_limit --param trade_date=20240102
    ```
 
-4. **对账**:
+4. **换源前的一致性对比**(同参数打链上两源,比较行数/字段/首末行):
 
    ```bash
-   .\bin\quantd.exe verify --lake D:\quant-lake --dataset stk_limit
+   quantd source compare --dataset trade_cal --param exchange=SSE --param start_date=20240101 --param end_date=20241231
+   ```
+
+5. **导入**(默认按 bindings 降级链,多源时按调用降级;重跑自动跳过已完成窗口):
+
+   ```bash
+   quantd import --dataset stock_basic --lake /vol1/quant-core/data/lake \
+     --registry /vol1/quant-core/etc/datasets.yaml --sources /vol1/quant-core/etc/sources.yaml
+   quantd import --dataset suspend_d --start 20240101 --end 20260927 ...   # 区间类
+   quantd import --dataset stock_basic --source relay-a --replace ...      # 指定源 + 快照覆盖
+   ```
+
+6. **对账**(manifest 与实际行数):
+
+   ```bash
+   quantd verify --lake <lake> --dataset <dataset>
+   ```
+
+7. **去重与修账**(导入中断重跑产生的重复;断点续传已能避免新重复):
+
+   ```bash
+   quantd dedupe --dataset namechange --lake <lake>            # dry-run 看重复
+   quantd dedupe --dataset namechange --lake <lake> --apply    # 执行去重(自动记账)
+   quantd dedupe --dataset x --lake <lake> --reconcile         # 仅修账(实际与 manifest 不符时)
    ```
 
 ## 验证
 
-- 成功信号:命令输出 `dataset <name> imported: N rows`,且 `quantd verify` 显示 `OK ... batches=N files=M rows=R`。
-- 接口可用性:`curl -s "http://127.0.0.1:8000/healthz"` 中对应数据集 `partitions>0`;
-  用 tushare SDK 验证 `pro.stk_limit(trade_date="20240102")` 返回数据。
+- 成功信号:`source check` 输出 `[ok]`;`import` 输出 `dataset <x> imported: N rows`;`verify` 输出 `OK ... rows=N`。
+- 数据语义校验(换源后必须做):
+  - `trade_cal` 覆盖率 = 区间内每个自然日一行(2024 SSE 应为 366 行,只含交易日=242 行属语义差异);
+  - `stk_limit` 单日行数 ≈ 当日上市股票数(约 5500);
+  - 单位:`suspend_d`/`index_daily` 字段与 tushare 一致。
 - 常见失败信号:
-  - `code=40101 msg=抱歉,您的token不对` → token 失效。
-  - `field "xxx" is not available for api daily` → 请求字段不在接口白名单。
-  - 导入后查询为空 → 分区年份与行内日期字段不一致,检查 `DateField` 配置。
+  - `结果被截断(返回 x / 共 y)` / `返回行数恰好等于单次上限` → 缩小窗口或提高 limit(中转站 limit 语义不一致,见 experience/multi-source-ingestion)。
+  - `upstream_pool_exhausted` → B 站上游池瞬时故障,窗口级重试 + 稍后重跑;持续失败可换源或等待。
+  - `unknown api_name` → 该源没有此接口(如 A 站无 namechange),需换源或调整 bindings。
+  - 导入中断后重跑 → 断点续传跳过已完成窗口;若在续传实现前产生重复,用 `dedupe`。
 
-## 完成情况
+## 内置数据集规格(源无关)
 
-- 2026-09-26:导入器与 mock 测试已完成(`internal/ingest/tushare_test.go`);
-  **真实导入尚未执行**(缺有效 token),首次导入后需回填本文档的验证结果。
+| 数据集 | 模式 | 切片/窗口 | 说明 |
+|---|---|---|---|
+| stock_basic | snapshot | list_status × exchange(9 片) | A 站 5000 硬上限内 |
+| trade_cal | snapshot | exchange × 年份(111 片) | 中转站窗口 ≤ 366 天 |
+| index_basic | snapshot | market × 5 片 | |
+| suspend_d | month-range | 按月 | |
+| namechange | month-range | 按月 | 仅 B 站有 |
+| index_daily | month-range | 10 个宽基指数 × 按年窗口 | 指数全量太大 |
+| stk_limit | date-range | 逐日 | 单日全市场 ~5500 行 |
+| bars_daily/bars_1m/adj_factor/corporate_actions | 迁移/离线 | — | 来自旧湖迁移 |
+
+## 最近验证
+
+2026-09-27:导入 trade_cal(27,283)、stock_basic(5,871)、index_basic(10,777)、suspend_d(9,459)、namechange(1,212)、index_daily(25,301)全部通过 `verify`;
+stk_limit 因 B 站上游池降级只完成部分(276,615 行,~50 个交易日),待续传补全。

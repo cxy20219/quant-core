@@ -7,7 +7,9 @@
 
 - **数据湖**:规范化 Parquet 数据集(注册表驱动),批次 manifest 血缘,行组统计剪枝。
 - **数据服务**:tushare 兼容 HTTP API(`POST /` + `api_name`),可被 tushare SDK 直接调用。
-- **多源接入**:adapter 化导入(TDX zip、Tushare Pro、AkShare/东财、旧湖迁移)。
+- **多源接入**:数据源是配置驱动的插件(`sources.yaml`):装载/卸载/换源不重编译;
+  内置 `tushare-http`(官方与中转站通用)与 `exec`(任意语言外部插件);
+  同一数据集可配置多源降级链,按调用自动切换。
 - **回测服务**:Go 引擎 + Python 策略子进程(规划中,M2)。
 
 ## 目录
