@@ -188,5 +188,35 @@
   "capital": 1000000.0,
   "warmup_bars": 5.0,
   "warmup_days": 800
+ },
+ {
+  "test": "test_pending_limit_partial_fill_fixed_slippage_accounting",
+  "probe": "ptrade_alignment_pending_slippage.py",
+  "start": "2020-01-02",
+  "end": "2020-01-06",
+  "frequency": "1m",
+  "capital": 1000000.0,
+  "warmup_bars": 5,
+  "warmup_days": 800
+ },
+ {
+  "test": "test_pending_limit_partial_fill_ratio_slippage_accounting",
+  "probe": "ptrade_alignment_ratio_pending_slippage.py",
+  "start": "2020-01-02",
+  "end": "2020-01-06",
+  "frequency": "1m",
+  "capital": 1000000.0,
+  "warmup_bars": 5,
+  "warmup_days": 800
+ },
+ {
+  "test": "test_pending_sell_partial_fill_slippage_accounting",
+  "probe": "ptrade_alignment_pending_sell_slippage.py",
+  "start": "2020-01-02",
+  "end": "2020-01-06",
+  "frequency": "1m",
+  "capital": 1000000.0,
+  "warmup_bars": 5,
+  "warmup_days": 800
  }
 ]

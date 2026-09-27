@@ -21,5 +21,5 @@
 - [数据湖上传脚本](harness/scripts/upload_lake.py)：目录树上行 NAS,断点续传
 - [远程命令脚本](harness/scripts/remote_exec.py)：在 NAS 上执行命令(支持 sudo 与脚本文件)
 - [Tushare 接口样例](harness/assets/tushare-api-examples.json)：各接口请求/响应样例与单位说明
-- [分钟对拍用例集](harness/assets/quant-minute-cases.json)：19 个 quantbt 分钟级对齐用例(探针+区间+参数)
+- [分钟对拍用例集](harness/assets/quant-minute-cases.json)：22 个 quantbt 分钟级对齐用例(探针+区间+参数)
 - [公司行动对拍用例集](harness/assets/quant-corporate-cases.json)：12 个除权除息/送转/配股/红利税用例

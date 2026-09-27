@@ -204,7 +204,7 @@ func (b *Broker) Order(sec string, amount int64, limitPrice float64, bar Bar) *O
 		order.Amount, order.OrigAmount = amount, amount
 		order.Status = "8"
 	}
-	b.applyFill(sec, amount, sidePrice, cashValue, cashFeeValue, order.ID)
+	b.applyFill(sec, amount, sidePrice, cashValue, cashFeeValue, order.ID, true, true)
 	// PTrade:现金按含滑点成交价扣减,但持仓按当前 Bar 收盘价估值
 	if pos, ok := b.portfolio.Positions[sec]; ok {
 		pos.LastSalePrice = bar.Close
@@ -279,7 +279,10 @@ func (b *Broker) MatchPending(bars map[string]Bar) {
 			cashValue = float64(fillAmount) * order.Limit
 			cashFeeValue = float64(order.Amount) * order.Limit
 		}
-		b.applyFill(order.Security, fillAmount, fillPrice, cashValue, cashFeeValue, order.ID)
+		includePositionFees := !(partial && b.slippage.Value != 0)
+		// quantbt:挂单部分成交的卖单在含滑点时不记任何交易费用
+		includeTradeFees := !(partial && fillAmount < 0 && b.slippage.Value != 0)
+		b.applyFill(order.Security, fillAmount, fillPrice, cashValue, cashFeeValue, order.ID, includePositionFees, includeTradeFees)
 		order.Filled += fillAmount
 		order.FilledPx = fillPrice
 		order.FilledAt = b.ClockText()
@@ -469,13 +472,18 @@ func (b *Broker) register(order *Order) {
 //
 // cashValue/cashFeeValue 为负数时按成交额自动计算;量化差异来自部分成交时
 // 按原始下单量计提费用与滑点(与 quantbt 的 _apply_fill 对齐)。
-func (b *Broker) applyFill(sec string, amount int64, price float64, cashValue, cashFeeValue float64, orderID string) {
+// includePositionFees=false 时买入费用不计入成本价;includeTradeFees=false 时完全不计交易费用
+// (挂单含滑点的部分成交:买入不计入成本价、卖出不计费用,与 quantbt 的 match_open_orders 一致)。
+func (b *Broker) applyFill(sec string, amount int64, price float64, cashValue, cashFeeValue float64, orderID string, includePositionFees, includeTradeFees bool) {
 	if amount == 0 {
 		return
 	}
 	pos := b.ensurePosition(sec)
 	value := float64(abs64(amount)) * price
-	fees := b.fees(value, amount < 0)
+	fees := 0.0
+	if includeTradeFees {
+		fees = b.fees(value, amount < 0)
+	}
 	if amount > 0 {
 		cv := value
 		if cashValue >= 0 {
@@ -490,7 +498,11 @@ func (b *Broker) applyFill(sec string, amount int64, price float64, cashValue, c
 		pos.Amount += amount
 		pos.TodayAmount += amount
 		if pos.Amount > 0 {
-			pos.CostBasis = (oldValue + value + fees) / float64(pos.Amount)
+			positionFee := fees
+			if !includePositionFees {
+				positionFee = 0
+			}
+			pos.CostBasis = (oldValue + value + positionFee) / float64(pos.Amount)
 		}
 		b.portfolio.Cash -= cv + cashFees
 	} else {
