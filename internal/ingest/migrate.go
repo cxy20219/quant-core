@@ -359,6 +359,9 @@ func (m *Migrator) blockOrder(pf *parquet.File, srcCols map[string]int, label st
 }
 
 // convertSource 把源值转换为目标逻辑值。
+//
+// 源文件同一字段在不同文件里可能是 DATE(INT32 天)或 TIMESTAMP(INT64 时间单位),
+// 因此以 parquet 值的物理类型为准;映射声明只提供语义归类。
 func convertSource(pv parquet.Value, fm FieldMap, tsScale int64, dstType schema.FieldType) schema.Value {
 	if pv.IsNull() {
 		return schema.NullValue()
@@ -366,19 +369,24 @@ func convertSource(pv parquet.Value, fm FieldMap, tsScale int64, dstType schema.
 	switch fm.Kind {
 	case SrcString:
 		return schema.Str(string(pv.ByteArray()))
-	case SrcDate:
-		return schema.Date(int64(pv.Int32()))
-	case SrcTimestamp:
-		micros := pv.Int64()
-		switch {
-		case tsScale == 1:
-		case tsScale == -1000:
-			micros /= 1000
-		default:
-			micros *= tsScale
+	case SrcDate, SrcTimestamp:
+		var days, micros int64
+		if pv.Kind() == parquet.Int32 {
+			days = int64(pv.Int32())
+			micros = days * 24 * 3600 * 1_000_000
+		} else {
+			micros = pv.Int64()
+			switch {
+			case tsScale == 1:
+			case tsScale == -1000:
+				micros /= 1000
+			default:
+				micros *= tsScale
+			}
+			days = micros / (24 * 3600 * 1_000_000)
 		}
 		if dstType == schema.TypeDate {
-			return schema.Date(micros / (24 * 3600 * 1_000_000))
+			return schema.Date(days)
 		}
 		return schema.Timestamp(micros)
 	case SrcFloat:
