@@ -6,7 +6,7 @@
 
 ## 架构
 
-- **Go 引擎**(`internal/btengine`):日线时钟、账户/持仓、撮合与费用、指标;
+- **Go 引擎**(`internal/btengine`):日线/分钟(1m)时钟、账户/持仓、撮合与费用、指标;
   数据来自本地数据湖(与数据服务同一条查询路径)。
 - **Python 子进程**(`python/runner/worker.py`):只运行策略代码,通过 stdio JSON-RPC
   调用引擎的行情/下单/账户能力;引擎持有全部语义权威。
@@ -22,7 +22,8 @@ POST 策略+参数 → 作业队列 → { Go 引擎 ⇄ Python 策略子进程 }
 
 - 镜像已含 `python3 + py3-numpy + py3-pandas`(deploy/Dockerfile.binary);
 - 本地运行时需要 Python 3.10+ 与 pandas(可用 `--python` 指定解释器);
-- 数据湖覆盖回测区间 + 预热期(bars_daily/bars_adj_factor)。
+- 数据湖覆盖回测区间 + 预热期(bars_daily/adj_factor;分钟模式还需 bars_1m,
+  预热按交易日数计,默认 30 天)。
 
 ## 关键步骤
 
