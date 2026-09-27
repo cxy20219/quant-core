@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """最小示例策略:双均线(日线),用于回测服务冒烟与文档。
 
-参数(通过 --params '{"fast":5,"slow":20,"symbols":["600000.SH"]}' 传入):
+参数(通过 --params '{"fast":5,"slow":20,"symbols":["600000.SS"]}' 传入):
   fast / slow: 均线窗口
   symbols:     股票池
   position_pct:单标的仓位比例
@@ -11,7 +11,7 @@
 def initialize(context):
     g.fast = int(params.get("fast", 5))
     g.slow = int(params.get("slow", 20))
-    g.symbols = list(params.get("symbols", ["600000.SH"]))
+    g.symbols = list(params.get("symbols", ["600000.SS"]))
     g.position_pct = float(params.get("position_pct", 0.95))
     set_universe(g.symbols)
     set_commission(commission_ratio=0.0003, min_commission=5.0)

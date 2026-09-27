@@ -170,17 +170,24 @@ func TestEngineLimitOrderPending(t *testing.T) {
 		t.Fatalf("run: %v", err)
 	}
 	// 日线语义:未成交限价单在当日 after_trading_end 后撤销(PTrade 语义),
-	// 因此本用例不应有成交,且委托状态应为 9(已撤)。
+	// 因此本用例不应有成交,且委托被移出有效列表、进入取消记录(status 9)。
 	if len(result.Trades) != 0 {
 		t.Fatalf("日级挂单不应在后续交易日成交,实际成交 %d 笔", len(result.Trades))
 	}
-	if len(result.Orders) != 1 || result.Orders[0].Status != "9" {
-		t.Fatalf("挂单应被撤销(status=9): %+v", result.Orders)
+	if len(result.Orders) != 0 {
+		t.Fatalf("过期挂单不应留在有效委托列表: %+v", result.Orders)
 	}
-	// 撤单后资金应完整保留(无冻结损失)
+	if len(result.Cancelled) != 1 || result.Cancelled[0].Status != "9" {
+		t.Fatalf("挂单应进入取消记录(status=9): %+v", result.Cancelled)
+	}
+	// 撤单后按 PTrade 语义:仅释放 数量×限价,冻结时计提的滑点与费用不退回。
+	// 冻结 = 1000×8.5 + 费用(max(8.5×1000×0.0003, 5) + 8.5×1000×0.0000487) = 8505.414
+	// 释放 = 1000×8.5 = 8500 → 净损失 5.414
 	last := result.Portfolio[len(result.Portfolio)-1]
-	if diff := last.Cash - cfg.CapitalBase; diff > 1e-6 || diff < -1e-6 {
-		t.Errorf("撤单后现金应等于初始资金: %.6f vs %.6f", last.Cash, cfg.CapitalBase)
+	retained := cfg.CapitalBase - last.Cash
+	want := 5.0 + 8500*0.0000487
+	if diff := retained - want; diff > 1e-6 || diff < -1e-6 {
+		t.Errorf("撤单后应仅保留费用 %.6f,实际 %.6f", want, retained)
 	}
 }
 

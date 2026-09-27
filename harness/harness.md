@@ -47,6 +47,7 @@
 - 数据湖自校验:`go run ./cmd/quantd verify --lake D:\quant-lake`
 - 数据源管理:`go run ./cmd/quantd source list|check|call|compare`
 - 本地回测:`go run ./cmd/quantd backtest --strategy examples/strategies/dual_ma.py --start 20240101 --end 20241231 --lake D:\quant-lake --params '{...}'`
+- 双引擎对拍:`python harness/scripts/parity_check.py --all --check-logs`
 - 数据导入:`go run ./cmd/quantd import --dataset stock_basic --lake D:\quant-lake`
 - 扫描诊断:`go run ./tools/lakediag --lake D:\quant-lake --dataset bars_daily --filter ts_code=600000.SH --start 20240101 --end 20241231`
 - 部署到 NAS:`harness/workflow/deploy-nas.md`

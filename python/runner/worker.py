@@ -77,29 +77,52 @@ class RPC:
 
 
 _rpc = RPC()
+_context = None  # 由 main 注入;下单后原地下钻刷新账户快照(PTrade:现金/持仓即时变化)
+
+
+def _refresh_portfolio():
+    if _context is None:
+        return
+    snapshot = _rpc.call("portfolio")
+    portfolio = _context.get("portfolio")
+    if portfolio is None:
+        _context["portfolio"] = _record(snapshot)
+    else:
+        portfolio.clear()
+        portfolio.update(_record(snapshot))
 
 
 # ── PTrade API(全局函数,策略直接调用)─────────────────────────────────
 
 def order(security, amount, limit_price=None):
-    return _rpc.call("order", security=security, amount=int(amount), limit_price=limit_price)
+    result = _rpc.call("order", security=security, amount=int(amount), limit_price=limit_price)
+    _refresh_portfolio()
+    return result
 
 
 def order_target(security, amount, limit_price=None):
-    return _rpc.call("order_target", security=security, amount=int(amount), limit_price=limit_price)
+    result = _rpc.call("order_target", security=security, amount=int(amount), limit_price=limit_price)
+    _refresh_portfolio()
+    return result
 
 
 def order_value(security, value, limit_price=None):
-    return _rpc.call("order_value", security=security, value=float(value), limit_price=limit_price)
+    result = _rpc.call("order_value", security=security, value=float(value), limit_price=limit_price)
+    _refresh_portfolio()
+    return result
 
 
 def order_target_value(security, value, limit_price=None):
-    return _rpc.call("order_target_value", security=security, value=float(value), limit_price=limit_price)
+    result = _rpc.call("order_target_value", security=security, value=float(value), limit_price=limit_price)
+    _refresh_portfolio()
+    return result
 
 
 def cancel_order(order_param):
     order_id = order_param.get("id") if isinstance(order_param, dict) else getattr(order_param, "id", order_param)
-    return _rpc.call("cancel_order", order_id=str(order_id))
+    result = _rpc.call("cancel_order", order_id=str(order_id))
+    _refresh_portfolio()
+    return result
 
 
 def get_order(order_id):
@@ -374,6 +397,7 @@ def _fmt(message, args) -> str:
 
 
 def main() -> int:
+    global _context
     runner = Runner()
     context = AttrDict({
         "capital_base": 0.0,
@@ -387,6 +411,7 @@ def main() -> int:
         if init.get("type") != "init":
             raise RuntimeError(f"期望 init,收到 {init.get('type')}")
         meta = init.get("meta") or {}
+        _context = context
         context["capital_base"] = meta.get("capital_base", 0.0)
         runner.load(init.get("strategy_source", ""), init.get("params") or {})
         runner.initialize(context)

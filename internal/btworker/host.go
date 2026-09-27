@@ -2,6 +2,7 @@ package btworker
 
 import (
 	"math"
+	"strings"
 
 	"quant-core/internal/btengine"
 	"quant-core/internal/schema"
@@ -12,6 +13,9 @@ import (
 // 数据流:
 //   - 引擎 → 视图:currentDay / previousDay / currentBars 由 sync() 拉取;
 //   - 视图 → 引擎:股票池(universe)写回 host.Universe,引擎按它取数与构建 Bar 快照。
+//
+// 代码规范:与 quantbt 一致,策略侧看到的代码保留其"原始写法"
+// (策略用 .SS 就显示 .SS,用 .SH 就显示 .SH);委托与成交统一为 .XSHG/.XSHE。
 type hostView struct {
 	host        *btengine.Host
 	portal      *btengine.DataPortal
@@ -19,6 +23,7 @@ type hostView struct {
 	currentDay  int64
 	previousDay int64
 	currentBars map[string]btengine.Bar
+	rawCodes    map[string]string // 内部码 → 策略原始码
 }
 
 func newHostView(host *btengine.Host) *hostView {
@@ -29,7 +34,16 @@ func newHostView(host *btengine.Host) *hostView {
 		currentDay:  host.CurrentDay,
 		previousDay: host.PreviousDay,
 		currentBars: host.CurrentBars,
+		rawCodes:    map[string]string{},
 	}
+}
+
+// display 返回策略侧应看到的代码(优先原始写法,否则转为 PTrade 风格)。
+func (v *hostView) display(internal string) string {
+	if raw, ok := v.rawCodes[internal]; ok {
+		return raw
+	}
+	return toPTradeCode(internal)
 }
 
 // sync 把引擎最新状态同步进视图(每次生命周期回调前后调用)。
@@ -42,9 +56,20 @@ func (v *hostView) sync() {
 // universe 返回当前股票池(权威存放在引擎侧)。
 func (v *hostView) getUniverse() []string { return v.host.Universe }
 
-// setUniverse 设置股票池并写回引擎。
-func (v *hostView) setUniverse(list []string) {
-	v.host.Universe = list
+// setUniverse 设置股票池并写回引擎,同时记录策略侧的原始代码写法。
+func (v *hostView) setUniverse(raw []string) {
+	internal := make([]string, 0, len(raw))
+	v.rawCodes = make(map[string]string, len(raw))
+	for _, code := range raw {
+		code = strings.ToUpper(strings.TrimSpace(code))
+		if code == "" {
+			continue
+		}
+		key := toInternalCode(code)
+		internal = append(internal, key)
+		v.rawCodes[key] = code
+	}
+	v.host.Universe = internal
 }
 
 func (v *hostView) dayString() string {
@@ -64,20 +89,48 @@ func (v *hostView) previousDayString() string {
 }
 
 // portfolioJSON 返回账户快照(传给 Python 的 context.portfolio)。
+//
+// 与 PTrade/quantbt 一致:调用时必须按最新持仓价重算市值,这样策略在
+// 下单回调内读到的 cash/portfolio_value 就是下单后的即时状态。
 func (v *hostView) portfolioJSON() map[string]any {
 	v.sync()
 	pf := v.host.Portfolio
 	positions := map[string]any{}
+	positionsValue := 0.0
 	for sec, pos := range pf.Positions {
-		positions[sec] = positionJSON(pos)
+		positionsValue += float64(pos.Amount) * pos.LastSalePrice
+		positions[sec] = positionJSONWith(pos, v.display)
+	}
+	portfolioValue := pf.Cash + positionsValue
+	returns := 0.0
+	if base := v.host.Config.CapitalBase; base > 0 {
+		returns = portfolioValue/base - 1
 	}
 	return map[string]any{
 		"cash":            pf.Cash,
-		"positions_value": pf.PositionsValue,
-		"portfolio_value": pf.PortfolioValue,
-		"returns":         pf.Returns,
+		"positions_value": positionsValue,
+		"portfolio_value": portfolioValue,
+		"returns":         returns,
 		"positions":       positions,
 	}
+}
+
+// displayList 批量转换内部码为策略侧代码。
+func (v *hostView) displayList(codes []string) []string {
+	out := make([]string, 0, len(codes))
+	for _, code := range codes {
+		out = append(out, v.display(code))
+	}
+	return out
+}
+
+// displayKeyedData 把以内部码为键的数据字典转为策略侧代码键。
+func (v *hostView) displayKeyedData(data map[string]map[string][]any) map[string]map[string][]any {
+	out := make(map[string]map[string][]any, len(data))
+	for code, fields := range data {
+		out[v.display(code)] = fields
+	}
+	return out
 }
 
 func (v *hostView) appendLog(level, message string) {

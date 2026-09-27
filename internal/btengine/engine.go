@@ -218,6 +218,7 @@ func (e *Engine) buildResult() *Result {
 		StrategyName: e.Config.StrategyName,
 		Portfolio:    e.Nav,
 		Orders:       e.Broker.Orders(),
+		Cancelled:    e.Broker.CancelledOrders(),
 		Trades:       e.Broker.Trades(),
 		Logs:         e.Logs,
 		Params:       e.Config.Params,

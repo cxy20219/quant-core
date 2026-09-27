@@ -54,7 +54,8 @@ func (w *Worker) BeforeTradingStart() error {
 func (w *Worker) HandleData(snapshot map[string]btengine.BarSnapshot) error {
 	bars := make(map[string]map[string]any, len(snapshot))
 	for code, bar := range snapshot {
-		bars[code] = map[string]any{
+		// 策略侧使用 PTrade 代码(.SS/.SZ/.JY)
+		bars[w.host.display(code)] = map[string]any{
 			"open": bar.Open, "high": bar.High, "low": bar.Low,
 			"close": bar.Close, "volume": bar.Volume, "amount": bar.Amount,
 		}
@@ -156,6 +157,8 @@ func (w *Worker) dispatch(method string, raw json.RawMessage) (any, error) {
 		return w.rpcOrder(method, raw)
 	case "cancel_order":
 		return w.rpcCancel(raw)
+	case "portfolio":
+		return w.host.portfolioJSON(), nil
 	case "get_order", "get_orders", "get_open_orders", "get_trades",
 		"get_position", "get_positions":
 		return w.rpcQuery(method, raw)
@@ -184,7 +187,10 @@ func (w *Worker) rpcHistory(raw json.RawMessage) (any, error) {
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return nil, err
 	}
-	securities := p.SecurityList
+	securities := []string{}
+	for _, s := range p.SecurityList {
+		securities = append(securities, toInternalCode(s))
+	}
 	if len(securities) == 0 {
 		securities = w.host.getUniverse()
 	}
@@ -198,7 +204,8 @@ func (w *Worker) rpcHistory(raw json.RawMessage) (any, error) {
 	if field == "" {
 		field = "close"
 	}
-	cutoff := w.host.previousDay
+	// include=False:截止到当前交易日之前(首日则取数据中的上一交易日)
+	cutoff := w.host.currentDay - 1
 	if p.Include {
 		cutoff = w.host.currentDay
 	}
@@ -217,10 +224,10 @@ func (w *Worker) rpcHistory(raw json.RawMessage) (any, error) {
 		dates[i] = schema.FormatDateISO(d)
 	}
 	return map[string]any{
-		"dates":     dates,
-		"securities": securities,
-		"fields":    []string{field},
-		"data":      data,
+		"dates":      dates,
+		"securities": w.host.displayList(securities),
+		"fields":     []string{field},
+		"data":       w.host.displayKeyedData(data),
 	}, nil
 }
 
@@ -244,7 +251,7 @@ func (w *Worker) rpcPrice(raw json.RawMessage) (any, error) {
 	if p.Count != nil && *p.Count > 0 {
 		count = *p.Count
 	}
-	cutoff := w.host.previousDay
+	cutoff := w.host.currentDay - 1
 	if p.EndDate != "" {
 		if days, err := schema.ParseDate(p.EndDate); err == nil && days <= w.host.currentDay {
 			cutoff = days
@@ -280,9 +287,9 @@ func (w *Worker) rpcPrice(raw json.RawMessage) (any, error) {
 	}
 	return map[string]any{
 		"dates":      dates,
-		"securities": []string{p.Security},
+		"securities": []string{w.host.display(p.Security)},
 		"fields":     fields,
-		"data":       data,
+		"data":       w.host.displayKeyedData(data),
 	}, nil
 }
 
@@ -298,6 +305,7 @@ func (w *Worker) rpcOrder(method string, raw json.RawMessage) (any, error) {
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return nil, err
 	}
+	p.Security = toInternalCode(p.Security)
 	bar, ok := w.host.currentBars[p.Security]
 	if !ok {
 		// 与 PTrade 一致:无当前行情时不下单,返回 None
@@ -318,22 +326,27 @@ func (w *Worker) rpcOrder(method string, raw json.RawMessage) (any, error) {
 			pos := w.host.broker.GetPosition(p.Security)
 			amount = amount - pos.Amount
 		}
-	case "order_value", "order_target_value":
+	case "order_value":
 		if p.Value == nil {
 			return nil, fmt.Errorf("%s: value 必填", method)
 		}
-		targetValue := *p.Value
-		pos := w.host.broker.GetPosition(p.Security)
-		if method == "order_target_value" {
-			targetValue = targetValue - float64(pos.Amount)*bar.Close
+		// 与 quantbt 一致:int(value/price) 后由 Order 内部按手数取整
+		amount = int64(*p.Value / bar.Close)
+	case "order_target_value":
+		if p.Value == nil {
+			return nil, fmt.Errorf("%s: value 必填", method)
 		}
-		amount = int64(targetValue / bar.Close)
+		// 与 quantbt 一致:先把目标市值换算成手数并取整,再与当前持仓求差
+		pos := w.host.broker.GetPosition(p.Security)
+		targetAmount := int64(*p.Value / bar.Close)
+		targetAmount = w.roundToLot(p.Security, targetAmount)
+		amount = targetAmount - pos.Amount
 	}
 	order := w.host.broker.Order(p.Security, amount, limit, bar)
 	if order == nil {
 		return nil, nil
 	}
-	return orderJSON(order), nil
+	return orderJSONWith(order, w.host.display), nil
 }
 
 func (w *Worker) rpcCancel(raw json.RawMessage) (any, error) {
@@ -354,20 +367,23 @@ func (w *Worker) rpcQuery(method string, raw json.RawMessage) (any, error) {
 	if raw != nil {
 		_ = json.Unmarshal(raw, &p)
 	}
+	if p.Security != "" {
+		p.Security = toInternalCode(p.Security)
+	}
 	switch method {
 	case "get_order":
 		order := w.host.broker.GetOrder(p.OrderID)
 		if order == nil {
 			return nil, nil
 		}
-		return orderJSON(order), nil
+		return orderJSONWith(order, w.host.display), nil
 	case "get_orders":
 		out := []map[string]any{}
 		for _, o := range w.host.broker.Orders() {
 			if p.Security != "" && o.Security != p.Security {
 				continue
 			}
-			out = append(out, orderJSON(o))
+			out = append(out, orderJSONWith(o, w.host.display))
 		}
 		return out, nil
 	case "get_open_orders":
@@ -376,7 +392,7 @@ func (w *Worker) rpcQuery(method string, raw json.RawMessage) (any, error) {
 			if p.Security != "" && o.Security != p.Security {
 				continue
 			}
-			out = append(out, orderJSON(o))
+			out = append(out, orderJSONWith(o, w.host.display))
 		}
 		return out, nil
 	case "get_trades":
@@ -387,7 +403,7 @@ func (w *Worker) rpcQuery(method string, raw json.RawMessage) (any, error) {
 				side = "卖"
 			}
 			out[tr.OrderID] = append(out[tr.OrderID], []any{
-				tr.TradeID, tr.OrderID, tr.Security, side,
+				tr.TradeID, tr.OrderID, toOrderSymbol(tr.Security), side,
 				float64(tr.Amount), tr.Price, tr.Value, tr.TradeTime,
 			})
 		}
@@ -396,15 +412,15 @@ func (w *Worker) rpcQuery(method string, raw json.RawMessage) (any, error) {
 		if p.Security == "" {
 			return nil, fmt.Errorf("get_position: security 必填")
 		}
-		return positionJSON(w.host.broker.GetPosition(p.Security)), nil
+		return positionJSONWith(w.host.broker.GetPosition(p.Security), w.host.display), nil
 	case "get_positions":
 		out := map[string]any{}
 		if p.Security != "" {
-			out[p.Security] = positionJSON(w.host.broker.GetPosition(p.Security))
+			out[w.host.display(p.Security)] = positionJSONWith(w.host.broker.GetPosition(p.Security), w.host.display)
 			return out, nil
 		}
 		for sec, pos := range w.host.broker.Positions() {
-			out[sec] = positionJSON(pos)
+			out[w.host.display(sec)] = positionJSONWith(pos, w.host.display)
 		}
 		return out, nil
 	}
@@ -425,7 +441,7 @@ func (w *Worker) rpcSetting(method string, raw json.RawMessage) (any, error) {
 	}
 	switch method {
 	case "set_universe":
-		w.host.setUniverse(normalizeUniverse(p.Securities))
+		w.host.setUniverse(p.Securities)
 		if err := w.host.portal.EnsureDaily(w.host.getUniverse()); err != nil {
 			return nil, err
 		}
@@ -464,10 +480,10 @@ func (w *Worker) rpcSetting(method string, raw json.RawMessage) (any, error) {
 
 // ── JSON 辅助 ────────────────────────────────────────────────────────────
 
-func orderJSON(o *btengine.Order) map[string]any {
+func orderJSONWith(o *btengine.Order, display func(string) string) map[string]any {
 	return map[string]any{
 		"id":           o.ID,
-		"security":     o.Security,
+		"security":     display(o.Security),
 		"amount":       o.Origin(),
 		"filled":       o.Filled,
 		"limit_price":  o.Limit,
@@ -479,14 +495,39 @@ func orderJSON(o *btengine.Order) map[string]any {
 	}
 }
 
-func positionJSON(p *btengine.Position) map[string]any {
+func positionJSONWith(p *btengine.Position, display func(string) string) map[string]any {
 	return map[string]any{
-		"security":        p.Security,
+		"security":        display(p.Security),
 		"amount":          p.Amount,
 		"enable_amount":   p.EnableAmount,
 		"last_sale_price": p.LastSalePrice,
 		"cost_basis":      p.CostBasis,
+		"today_amount":    p.TodayAmount,
 	}
+}
+
+// toPTradeKeyedData 把以内部码为键的数据字典转为 PTrade 码键。
+func toPTradeKeyedData(data map[string]map[string][]any) map[string]map[string][]any {
+	out := make(map[string]map[string][]any, len(data))
+	for code, fields := range data {
+		out[toPTradeCode(code)] = fields
+	}
+	return out
+}
+
+// roundToLot 把数量向下取整到手数(与引擎的 _round_amount 一致)。
+func (w *Worker) roundToLot(sec string, amount int64) int64 {
+	lot := int64(100)
+	if len(sec) >= 2 {
+		switch sec[:2] {
+		case "11", "12", "13":
+			lot = 10
+		}
+	}
+	if amount <= 0 {
+		return 0
+	}
+	return amount / lot * lot
 }
 
 func normalizeUniverse(list []string) []string {

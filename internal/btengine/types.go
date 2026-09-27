@@ -56,7 +56,8 @@ type Bar struct {
 type Position struct {
 	Security      string
 	Amount        int64   // 总持仓(股)
-	EnableAmount  int64   // 可卖数量
+	EnableAmount  int64   // 可卖数量(T+1:当日买入不计入)
+	TodayAmount   int64   // 当日买入数量(次日开盘转入可卖)
 	LastSalePrice float64 // 最新价
 	CostBasis     float64 // 成本价(含费用分摊)
 }
@@ -66,15 +67,21 @@ type Order struct {
 	ID         string  `json:"id"`
 	Security   string  `json:"security"`
 	Amount     int64   `json:"amount"`      // 正买负卖
-	Filled     int64   `json:"filled"`      // 已成交数量
+	Filled     int64   `json:"filled"`      // 已成交数量(带方向)
 	Limit      float64 `json:"limit_price"` // 限价(0 表示市价)
-	Status     string  `json:"status"`      // 2=挂单 6=部分成交 8=全部成交
+	Status     string  `json:"status"`      // 2=挂单 6=部分成交 8=全部成交 9=已撤
 	CreatedAt  string  `json:"created_at"`
 	FilledAt   string  `json:"filled_at,omitempty"`
 	FilledAmt  int64   `json:"filled_amount"`
 	FilledPx   float64 `json:"filled_price"`
 	OrderType  string  `json:"order_type"` // market / limit
 	OrigAmount int64   `json:"orig_amount"`
+
+	// 挂单冻结(仅未成交限价单):
+	ReservedCash float64 `json:"-"` // 已冻结现金 = 数量×限价×(1±滑点/2) + 费用
+	ReservedValue float64 `json:"-"` // 冻结时的成交估值(数量×限价×(1±滑点/2))
+	ReleasedCash float64 `json:"-"` // 到期释放现金 = 数量×限价
+	FrozenAmount int64   `json:"-"` // 已冻结股数(卖出挂单)
 }
 
 // Origin 返回原始委托数量(正买负卖)。
@@ -124,6 +131,7 @@ type Result struct {
 	EndDate      string       `json:"end_date"`
 	Portfolio    []NavRow     `json:"portfolio"`
 	Orders       []*Order     `json:"orders"`
+	Cancelled    []*Order     `json:"cancelled_orders,omitempty"` // 当日过期撤销的挂单(PTrade 订单列表不含它们)
 	Trades       []*Trade     `json:"trades"`
 	Logs         []LogRecord  `json:"logs"`
 	Summary      Summary      `json:"summary"`

@@ -238,6 +238,7 @@ func cmdBacktest(args []string) {
 	if err != nil {
 		log.Fatalf("回测失败: %v", err)
 	}
+	btworker.ApplyDisplayCodes(result)
 	summary := result.Summary
 	log.Printf("回测完成: %s ~ %s", result.StartDate, result.EndDate)
 	log.Printf("初始资金 %.0f → 期末 %.0f(收益 %.2f%%)",

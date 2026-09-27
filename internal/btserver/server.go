@@ -240,6 +240,7 @@ func (s *Server) run(job *Job) {
 		s.logf("backtest %s 失败: %v", job.ID[:8], err)
 	} else {
 		job.Status = "done"
+		btworker.ApplyDisplayCodes(result)
 		job.Result = result
 		job.Summary = summarize(job)
 		s.logf("backtest %s 完成: 收益 %.2f%%, 委托 %d, 成交 %d, 用时 %.1fs",
