@@ -5,11 +5,12 @@ bin/
 # 数据湖(本地测试湖与大湖均不入库)
 lake/
 lake-test/
+lake-import-test/
 /data/
 
-# 密钥与本地配置
+# 密钥与本地配置(绝不入库)
 .env
-.env.local
+.env.*
 
 # Python 缓存
 __pycache__/
