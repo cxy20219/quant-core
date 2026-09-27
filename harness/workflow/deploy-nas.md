@@ -12,6 +12,26 @@
 - NAS 上 Docker 可用且已配置可达镜像源,见 `harness/references/nas-server.md`。
 - 数据湖已迁移并完成对账(见 `harness/workflow/data-lake-migration.md`)。
 
+## NAS 连接参数(脚本共用)
+
+内网地址与用户名不入库:三个脚本(远程命令、上传、验收)共用助手
+`harness/scripts/_nasenv.py`——优先读环境变量,其次读项目根 `.env`。
+
+```bash
+# 在项目根 .env 写入(该文件已 gitignore)
+QUANT_NAS_HOST=<nas-host>
+QUANT_NAS_USER=<nas-user>
+
+# 验证助手读取生效(应输出远端主机名)
+python harness/scripts/remote_exec.py "hostname"
+
+# 也可直接检查助手解析结果(助手文件:harness/scripts/_nasenv.py)
+python -c "import sys; sys.path.insert(0, 'harness/scripts'); from _nasenv import nas_host, nas_user; print(nas_host(), nas_user())"
+```
+
+验证:上面命令输出远端主机名即表示 `harness/scripts/_nasenv.py` 已从 `.env` 取到连接参数;
+未配置时脚本会明确报错提示缺少 `QUANT_NAS_HOST` / `QUANT_NAS_USER`。
+
 ## 关键步骤
 
 1. **交叉编译**(Windows 开发机):

@@ -2,7 +2,7 @@
 
 > 本仓库为公开仓库,内网地址与用户名一律以占位符表示:`<nas-host>` / `<nas-user>`。
 > 真实值放在项目根 `.env`(已 gitignore):`QUANT_NAS_HOST`、`QUANT_NAS_USER`;
-> `harness/scripts/*` 会优先读环境变量,其次读 `.env`。
+> `harness/scripts/` 下的脚本(经共用助手 `harness/scripts/_nasenv.py`)会优先读环境变量,其次读 `.env`。
 
 ## 基本信息
 
