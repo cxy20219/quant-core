@@ -2,10 +2,11 @@
 
 ## 项目定位
 
-- quant-core 提供两件事:**量化数据服务**(纯 Go 数据湖 + tushare 兼容 HTTP 接口)与**量化回测服务**(Go 引擎 + Python 策略子进程,规划中)。
+- quant-core 提供两件事:**量化数据服务**(纯 Go 数据湖 + tushare 兼容 HTTP 接口)与**量化回测服务**(Go 引擎 + Python 策略子进程,已上线)。
 - 数据服务已上线:NAS `<nas-user>@<nas-host>:8000`,Docker 部署,数据湖外挂 `/vol1/quant-core/data/lake`。
 - 数据源是**配置驱动的插件**(`sources.yaml`):可随时装载/卸载/换源,当前使用 tushare 双源中转(A/B 站)。
-- 回测服务未实现;数据服务是当前唯一的生产组件。
+- 回测服务已上线(日线 + 分钟 1m):REST 提交 Python 策略+参数返回结果,落 `/data/backtests`。
+- 回测语义以 quantbt 为参照逐项对拍:日线 8 探针 + 分钟 19 用例全通过(净值/委托/成交/日志)。
 
 ## 关键约束(容易猜错)
 
@@ -30,7 +31,7 @@
 - `internal/query/`:纯 Go 扫描引擎(分区剪枝 → 行组跳过 → 列投影 → 元数据缓存)。
 - `internal/tsapi/`:tushare 兼容协议层(api_name 注册表、参数→谓词、单位换算)。
 - `internal/ingest/`:旧湖迁移与数据源导入器(断点续传/截断检测/窗口重试)。
-- `internal/btengine/`:Go 回测引擎(日线时钟/账户/撮合/费用/指标)。
+- `internal/btengine/`:Go 回测引擎(日线+分钟时钟/账户/撮合/费用/指标;分钟门户 `minute.go`)。
 - `internal/btworker/`:Python 策略子进程与 stdio JSON-RPC 协议。
 - `internal/btserver/`:回测作业队列与 REST API。
 - `python/runner/worker.py`:策略执行器(PTrade 子集 API,薄适配)。
@@ -47,7 +48,9 @@
 - 数据湖自校验:`go run ./cmd/quantd verify --lake D:\quant-lake`
 - 数据源管理:`go run ./cmd/quantd source list|check|call|compare`
 - 本地回测:`go run ./cmd/quantd backtest --strategy examples/strategies/dual_ma.py --start 20240101 --end 20241231 --lake D:\quant-lake --params '{...}'`
-- 双引擎对拍:`python harness/scripts/parity_check.py --all --check-logs`
+- 分钟回测:加 `--frequency 1m --warmup 30`(`--warmup` 为预热交易日数)
+- 双引擎对拍:`python harness/scripts/parity_check.py --all --check-logs`(日线)
+- 分钟对拍:`python harness/scripts/parity_check.py --cases harness/assets/quant-minute-cases.json --check-logs`
 - 数据导入:`go run ./cmd/quantd import --dataset stock_basic --lake D:\quant-lake`
 - 扫描诊断:`go run ./tools/lakediag --lake D:\quant-lake --dataset bars_daily --filter ts_code=600000.SH --start 20240101 --end 20241231`
 - 部署到 NAS:`harness/workflow/deploy-nas.md`

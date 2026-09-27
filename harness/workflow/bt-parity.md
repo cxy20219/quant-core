@@ -3,7 +3,7 @@
 ## 适用场景
 
 Go 回测引擎修改后,验证其与参照实现 quantbt(PTrade 兼容,已由 55+ 探针与实盘回填验证)
-**逐项一致**:日终净值、现金、委托、成交、策略可见日志。
+**逐项一致**:净值序列、现金、委托、成交、策略可见日志。日线与分钟(1m)两种频率都覆盖。
 
 ## 前置条件
 
@@ -13,47 +13,70 @@ Go 回测引擎修改后,验证其与参照实现 quantbt(PTrade 兼容,已由 5
 
 ## 关键步骤
 
-1. **单个探针对拍**(默认 2020-01-02 ~ 2020-01-10,600570.SS 日线):
+1. **日线单探针对拍**(默认 2020-01-02 ~ 2020-01-10,600570.SS):
 
    ```bash
    python harness/scripts/parity_check.py \
      --strategy examples/strategies/parity/p01_market_basic.py --check-logs
    ```
 
-2. **全量探针批量对拍**:
+2. **日线全量探针批量对拍**:
 
    ```bash
    python harness/scripts/parity_check.py --all --check-logs
    ```
 
-3. **新增探针**:在 `examples/strategies/parity/` 下加 `pNN_*.py`(用固定标的与日期,
-   把关键状态 `log.info` 出来,便于日志级对拍)。
+3. **分钟对拍**(quantbt 的 PTrade 对齐探针,参数取自其测试文件):
+
+   ```bash
+   python harness/scripts/parity_check.py --cases harness/assets/quant-minute-cases.json --check-logs
+   ```
+
+   单探针示例(注意 Go 侧预热按天,分钟模式默认 30 天):
+
+   ```bash
+   python harness/scripts/parity_check.py --frequency 1m --warmup-bars 5 \
+     --start 2020-01-02 --end 2020-01-03 \
+     --strategy E:/AI-work/quant-data/strategies/probes/ptrade_alignment_limit_fill.py --check-logs
+   ```
+
+4. **新增探针**:日线探针放 `examples/strategies/parity/pNN_*.py`;分钟探针沿用
+   quant-data 的 `strategies/probes/ptrade_alignment_*.py`,把参数登记到
+   `harness/assets/quant-minute-cases.json`(字段:`test/probe/start/end/frequency/capital/warmup_bars/warmup_days`)。
 
 ## 对比口径
 
 | 项目 | 说明 |
 |---|---|
-| 净值序列 | 日期逐条对齐、`portfolio_value` 与 `cash` 在 1e-6 相对容差内 |
+| 净值序列 | 逐条对齐:日线用 `date`、分钟用 `datetime`;`portfolio_value` 与 `cash` 在 1e-6 相对容差内 |
 | 委托 | `dt/symbol/status/amount/filled/limit` 逐项一致(代码用 `.XSHG/.XSHE`) |
 | 成交 | `security/side/amount/price/value` 逐项一致 |
-| 日志 | `--check-logs` 时消息序列必须完全一致(策略可见状态的强校验) |
+| 日志 | `--check-logs` 时消息序列必须完全一致(策略可见状态的强校验);委托号(32 位十六进制)对比前归一化为 `<id>` |
 
 ## 验证
 
-- 成功信号:`PASS: 净值/委托/成交逐项一致`;批量模式输出 `8 个探针, 8 通过, 0 失败`。
+- 成功信号:`PASS: 净值/委托/成交逐项一致`;批量模式输出
+  `8 个探针, 8 通过, 0 失败`(日线)或 `19 个用例, 19 通过, 0 失败`(分钟)。
 - 失败信号:输出首个差异(如 `净值[3] 2020-01-07 不同: quantbt=... go=...`),
   按 `harness/experience/bt-semantics-parity.md` 的语义清单排查。
-- 已覆盖探针:P01 市价买卖 / P02 限价挂单与撤单 / P03 T+1 / P04 目标单取整 /
+- 已覆盖(日线):P01 市价买卖 / P02 限价挂单与撤单 / P03 T+1 / P04 目标单取整 /
   P05 资金与成交量上限 / P06 费用滑点变体 / P07 多标的组合 / P08 生命周期与 run_daily。
+- 已覆盖(分钟,19 用例):分钟基线(日线 history/账户)/ T+1 与剩余成本 /
+  可成交限价与部分成交自动撤余量 / 市价与目标单量额上限 / 资金上限取整 /
+  UNLIMITED 跳过量上限 / value 与 target_value 取整 / 资金上限挂单缩量 /
+  涨跌停价与市价单 / 停牌用前收与量 0 / 限价触发撮合时点 / 触发限价量上限 /
+  零滑点触发卖单费用 / order() 前先撮合挂单(量竞争)/ 挂单共享 Bar 量预算且跨 Bar 延续 /
+  跨标量预算独立 / 同回调撤单换单释放资源。
 
 ## 边界与未覆盖
 
-- 当前对拍仅覆盖**日线**。quantbt 的 38 个对齐用例均为**分钟级**(T+1 盘中、
-  Bar 内共享成交量、13:00 时点、午盘首分钟等),需要 Go 引擎实现分钟时钟后再接入。
-- 公司行动(分红/送转/配股)未实现,相关探针未纳入对拍。
-- `get_fundamentals`、`tick_data`/`on_order_response` 等未实现或明确不支持。
+- 公司行动(分红/送转/配股)未实现,相关探针(`ptrade_alignment_corporate_*`、
+  `dividend_tax_*`、`rights_*`、`fractional_allotment` 等)未纳入对拍。
+- `get_fundamentals`、`get_stock_exrights` 仅占位;`tick_data`/`on_order_response` 等未实现。
+- 分钟模式为按交易日滚动窗口加载(默认 30 天),超长区间/大股票池的内存与速度优化未做。
 
 ## 最近验证
 
-2026-09-27:日线 8 探针 × 3 项(净值/委托/成交)+ 日志全量对拍通过;
-NAS 部署后同参数结果与本地逐位一致(27.37% / 期末 1,273,745)。
+2026-09-27:日线 8 探针全通过;分钟 19 用例全通过(净值/委托/成交/日志四项);
+Go 单测全绿。分钟引擎实现期间修复了扫描引擎跨月分区剪枝丢数据的缺陷(见
+`harness/experience/scan-engine-pruning.md`)。
