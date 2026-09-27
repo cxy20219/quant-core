@@ -9,7 +9,9 @@
   返回净值/委托/成交/日志/指标。`POST /api/backtests` 提交,`GET /api/backtests/{id}` 查询。
 - **数据湖**:规范化 Parquet 数据集(注册表驱动),批次 manifest 血缘,行组统计剪枝。
 - **管理面板**:`GET /panel` —— 数据同步状态(行数/批次/磁盘/最后更新/数据源绑定)、
-  回测结果(作业列表 + 净值曲线 + 委托/成交/日志),预置因子管理入口;
+  回测结果(作业列表 + 净值曲线 + 委托/成交/日志)、因子管理与跟踪(注册表 + IC/分层曲线);
+- **因子服务**:`/api/factors` —— 因子注册(内置动量/反转/波动/换手/市值/估值字段)、
+  覆盖率校验、IC/RankIC 与分层收益跟踪;
 - **数据服务**:tushare 兼容 HTTP API(`POST /` + `api_name`),可被 tushare SDK 直接调用;
   **在线接口文档**:`GET /docs`(由接口表+数据集注册表自动生成,含参数/字段/单位/示例),
   `GET /docs/openapi.json`(OpenAPI 3.0,可导入 Postman/Swagger)。

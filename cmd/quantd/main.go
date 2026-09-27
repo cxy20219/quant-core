@@ -30,6 +30,7 @@ import (
 	"quant-core/internal/btengine"
 	"quant-core/internal/btserver"
 	"quant-core/internal/btworker"
+	"quant-core/internal/factor"
 	"quant-core/internal/httpx"
 	"quant-core/internal/ingest"
 	"quant-core/internal/lake"
@@ -173,7 +174,13 @@ func cmdServe(args []string) {
 	btServer.Logf = log.Printf
 	btServer.LoadRecords()
 
-	// 管理面板:数据同步状态 + 回测结果(后续因子管理入口)
+	// 因子服务:注册表 + 截面跟踪(IC / 分层)
+	factorSrv, err := factor.NewServer(l, log.Printf)
+	if err != nil {
+		log.Fatalf("factor: %v", err)
+	}
+
+	// 管理面板:数据同步状态 + 回测结果 + 因子管理
 	panelSrv := panel.NewServer(panel.Config{
 		Lake:        l,
 		SourcesPath: *sourcesPath,
@@ -187,6 +194,8 @@ func cmdServe(args []string) {
 	mux.Handle("/docs/openapi.json", server.OpenAPIHandler())
 	mux.Handle("/panel", panelSrv.Handler())
 	mux.Handle("/panel/", panelSrv.Handler())
+	mux.Handle("/api/factors", factorSrv.Handler())
+	mux.Handle("/api/factors/", factorSrv.Handler())
 	mux.Handle("/api/backtests", btServer.Handler())
 	mux.Handle("/api/backtests/", btServer.Handler())
 	mux.Handle("/", server.Handler())

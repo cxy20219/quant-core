@@ -62,18 +62,7 @@
   <section id="tab-overview"></section>
   <section id="tab-sync" hidden></section>
   <section id="tab-backtest" hidden></section>
-  <section id="tab-factor" hidden>
-    <h2>因子管理 / 因子跟踪(规划中)</h2>
-    <div class="placeholder">
-      <p>本页预留给后续的因子能力,计划包含:</p>
-      <ul>
-        <li><b>因子管理</b>:因子注册(名称/口径/依赖数据)、版本与生效区间、按数据集校验覆盖率</li>
-        <li><b>因子跟踪</b>:IC / RankIC 时序、分层收益、换手与衰减、与回测结果关联</li>
-        <li><b>数据支撑</b>:基于 <code>daily_cross</code> 截面表与批量历史口径计算,结果落盘到湖的 <code>meta</code> 侧</li>
-      </ul>
-      <p>接口形态会沿用现有风格:<code>POST /api/factors</code> 注册、<code>GET /api/factors/{id}/tracking</code> 查询跟踪结果。</p>
-    </div>
-  </section>
+  <section id="tab-factor" hidden></section>
 </main>
 <script>
 const fmtInt = n => (n === null || n === undefined || n === '') ? '-' : Number(n).toLocaleString('en-US');
@@ -100,7 +89,7 @@ const tabs = {
   overview: { el: document.getElementById('tab-overview'), render: renderOverview },
   sync: { el: document.getElementById('tab-sync'), render: renderSync },
   backtest: { el: document.getElementById('tab-backtest'), render: () => renderBacktest() },
-  factor: { el: document.getElementById('tab-factor'), render: async () => {} },
+  factor: { el: document.getElementById('tab-factor'), render: renderFactor },
 };
 document.querySelectorAll('nav button').forEach(btn => {
   btn.onclick = () => {
@@ -109,6 +98,168 @@ document.querySelectorAll('nav button').forEach(btn => {
     tabs[btn.dataset.tab].render();
   };
 });
+
+// ── 因子 ────────────────────────────────────────────────────────────────
+let currentFactor = null;
+async function renderFactor(factorId) {
+  const el = tabs.factor.el;
+  if (factorId !== undefined) currentFactor = factorId;
+  el.innerHTML = '<p class="muted">加载中…</p>';
+  try {
+    const meta = await getJSON('/api/factors');
+    const factors = meta.factors || [];
+    const catalog = meta.catalog || [];
+    if (!currentFactor) {
+      el.innerHTML = [
+        '<div class="toolbar"><button class="btn" onclick="renderFactor()">刷新</button>',
+        '<span class="muted">注册表:<code>' + esc(meta.path || '') + '</code>;跟踪口径:截面因子值 vs 前向收益(默认 5 日)</span></div>',
+        '<h2>因子注册表(' + factors.length + ')</h2>',
+        factors.length ? '<table><tr><th>ID</th><th>名称</th><th>类型</th><th>参数</th><th>方向</th><th>说明</th><th></th></tr>' +
+          factors.map(f => '<tr><td><code>' + esc(f.id) + '</code></td><td>' + esc(f.name) + '</td>' +
+            '<td>' + esc(f.kind) + '</td><td class="muted">' + esc(JSON.stringify(f.params || {})) + '</td>' +
+            '<td>' + esc(f.direction || '-') + '</td><td class="muted">' + esc(f.description || '') + '</td>' +
+            '<td><button class="btn" onclick="renderFactor(\'' + esc(f.id) + '\')">跟踪</button> ' +
+            '<button class="btn" onclick="deleteFactor(\'' + esc(f.id) + '\')">删除</button></td></tr>').join('') + '</table>'
+          : '<p class="muted">尚未注册因子</p>',
+        '<h2>注册新因子</h2>',
+        '<table><tr><th>字段</th><th>值</th></tr>',
+        '<tr><td>ID</td><td><input id="f-id" placeholder="如 momentum_20"></td></tr>',
+        '<tr><td>名称</td><td><input id="f-name" placeholder="如 20日动量"></td></tr>',
+        '<tr><td>类型</td><td><select id="f-kind">' + catalog.map(k => '<option value="' + esc(k.kind) + '">' + esc(k.kind + ' - ' + k.name) + '</option>').join('') + '</select></td></tr>',
+        '<tr><td>参数</td><td><input id="f-params" value=\'{"window":20}\' size="40"></td></tr>',
+        '<tr><td>方向</td><td><select id="f-dir"><option value="positive">positive(值大者收益高)</option><option value="negative">negative(值小者收益高)</option></select></td></tr>',
+        '<tr><td>说明</td><td><input id="f-desc" size="60"></td></tr>',
+        '</table>',
+        '<div class="toolbar"><button class="btn" onclick="createFactor()">注册</button>',
+        '<span class="muted">内置类型:' + catalog.map(k => esc(k.kind)).join(' / ') + '</span></div>',
+      ].join('');
+      return;
+    }
+    const def = factors.find(f => f.id === currentFactor) || { id: currentFactor };
+    const q = factorQuery();
+    const track = await getJSON('/api/factors/' + encodeURIComponent(currentFactor) + '/tracking?' + q);
+    const s = track.stats || {};
+    const ic = (track.ic || []).map(v => (v === null ? null : v));
+    const rankIc = track.rank_ic || [];
+    el.innerHTML = [
+      '<div class="toolbar"><button class="btn" onclick="currentFactor=null;renderFactor()">← 返回列表</button>',
+      '<label class="muted">区间 <input id="f-start" type="date" value="' + esc(factorStart()) + '"></label>',
+      '<label class="muted">~ <input id="f-end" type="date" value="' + esc(factorEnd()) + '"></label>',
+      '<label class="muted">horizon <input id="f-horizon" type="number" min="1" max="60" value="5" style="width:60px"></label>',
+      '<label class="muted">layers <input id="f-layers" type="number" min="2" max="10" value="5" style="width:60px"></label>',
+      '<button class="btn" onclick="renderFactor()">应用</button>',
+      '<span class="muted">' + esc(track.dataset || '') + ' · 样本 ' + (track.dates || []).length + ' 天</span></div>',
+      '<h2><code>' + esc(currentFactor) + '</code> ' + esc(def.name || '') + ' <span class="muted">' + esc(def.kind || '') + ' ' + esc(JSON.stringify(def.params || {})) + '</span></h2>',
+      '<div class="cards">',
+      card('样本天数', fmtInt(s.samples)),
+      card('IC 均值', num4(s.ic_mean)),
+      card('RankIC 均值', num4(s.rank_ic_mean)),
+      card('IR(IC)', num4(s.ir)),
+      card('IC>0 占比', pct(s.ic_positive_ratio)),
+      card('多空累计(高-低)', num4(s.long_short_cum)),
+      '</div>',
+      '<h3>IC / RankIC 时序</h3><div class="chart">' + lineChart([{ name: 'IC', color: '#0969da', values: ic },
+        { name: 'RankIC', color: '#bf8700', values: rankIc }], track.dates, 0) + '</div>',
+      '<h3>分层累计收益(层 1 = 因子值最小)</h3><div class="chart">' +
+        lineChart((track.layer_cum || []).map((values, i) => ({ name: '层' + (i + 1), color: layerColor(i), values: values })), track.dates, 0) + '</div>',
+      '<details><summary>分层单期平均前向收益</summary><table><tr><th>层</th><th class="num">平均前向收益</th></tr>' +
+        (track.layer_cum || []).map((_v, i) => '<tr><td>层' + (i + 1) + '</td><td class="num">' +
+          num4(layerAvg(track, i)) + '</td></tr>').join('') + '</table></details>',
+    ].join('');
+  } catch (e) { el.innerHTML = '<p class="pill err">加载失败: ' + esc(e.message) + '</p>'; }
+}
+
+function factorStart() {
+  const el = document.getElementById('f-start');
+  if (el && el.value) return el.value;
+  const d = new Date(); d.setFullYear(d.getFullYear() - 1);
+  return d.toISOString().slice(0, 10);
+}
+function factorEnd() {
+  const el = document.getElementById('f-end');
+  if (el && el.value) return el.value;
+  return new Date().toISOString().slice(0, 10);
+}
+function factorQuery() {
+  const h = document.getElementById('f-horizon');
+  const l = document.getElementById('f-layers');
+  const start = factorStart().replace(/-/g, '');
+  const end = factorEnd().replace(/-/g, '');
+  return 'start=' + encodeURIComponent(start) + '&end=' + encodeURIComponent(end) +
+    '&horizon=' + (h && h.value ? h.value : 5) + '&layers=' + (l && l.value ? l.value : 5);
+}
+
+function layerAvg(track, layer) {
+  const vals = (track.layer_ret || [])[layer] || [];
+  let sum = 0, n = 0;
+  vals.forEach(v => { if (v !== null) { sum += v; n++; } });
+  return n ? sum / n : null;
+}
+
+function num4(v) { return (v === null || v === undefined || isNaN(v)) ? '-' : Number(v).toFixed(4); }
+function pct(v) { return (v === null || v === undefined || isNaN(v)) ? '-' : (v * 100).toFixed(1) + '%'; }
+function layerColor(i) {
+  const palette = ['#cf222e', '#bf8700', '#1a7f37', '#0969da', '#8250df', '#0a3069', '#6639ba'];
+  return palette[i % palette.length];
+}
+
+async function createFactor() {
+  const body = {
+    id: document.getElementById('f-id').value.trim(),
+    name: document.getElementById('f-name').value.trim(),
+    kind: document.getElementById('f-kind').value,
+    params: JSON.parse(document.getElementById('f-params').value || '{}'),
+    direction: document.getElementById('f-dir').value,
+    description: document.getElementById('f-desc').value.trim(),
+  };
+  const resp = await fetch('/api/factors', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const data = await resp.json();
+  if (!resp.ok) { alert('注册失败: ' + (data.error || resp.status)); return; }
+  renderFactor();
+}
+
+async function deleteFactor(id) {
+  if (!confirm('删除因子 ' + id + ' ?')) return;
+  const resp = await fetch('/api/factors/' + encodeURIComponent(id), { method: 'DELETE' });
+  if (!resp.ok) { const d = await resp.json(); alert('删除失败: ' + (d.error || resp.status)); return; }
+  renderFactor();
+}
+
+// lineChart:多序列折线(带 0 轴),values 允许 null(缺口断开)
+function lineChart(series, dates, yPad) {
+  const w = 1100, h = 240, pad = 44;
+  const all = [];
+  series.forEach(s => (s.values || []).forEach(v => { if (v !== null && !isNaN(v)) all.push(Number(v)); }));
+  if (all.length < 2) return '<p class="muted">数据不足</p>';
+  let min = Math.min.apply(null, all), max = Math.max.apply(null, all);
+  if (min > 0) min = 0;
+  if (max < 0) max = 0;
+  const span = (max - min) || 1;
+  const n = Math.max.apply(null, series.map(s => (s.values || []).length));
+  const x = i => pad + (w - 2 * pad) * (n <= 1 ? 0 : i / (n - 1));
+  const y = v => h - pad - (h - 2 * pad) * (v - min) / span;
+  let out = '<svg viewBox="0 0 ' + w + ' ' + h + '" width="100%" height="' + h + '">';
+  out += '<line x1="' + pad + '" y1="' + y(0).toFixed(1) + '" x2="' + (w - pad) + '" y2="' + y(0).toFixed(1) + '" stroke="#d0d7de" stroke-dasharray="3 3"/>';
+  series.forEach(s => {
+    let seg = [], segs = [];
+    (s.values || []).forEach((v, i) => {
+      if (v === null || v === undefined || isNaN(v)) { if (seg.length > 1) segs.push(seg); seg = []; return; }
+      seg.push(x(i).toFixed(1) + ',' + y(Number(v)).toFixed(1));
+    });
+    if (seg.length > 1) segs.push(seg);
+    segs.forEach(points => { out += '<polyline fill="none" stroke="' + s.color + '" stroke-width="1.4" points="' + points.join(' ') + '"/>'; });
+  });
+  out += '<text x="' + pad + '" y="14" font-size="12" fill="#656d76">' + max.toFixed(4) + '</text>';
+  out += '<text x="' + pad + '" y="' + (h - 6) + '" font-size="12" fill="#656d76">' + min.toFixed(4) + '</text>';
+  const legend = series.map(s => '<tspan fill="' + s.color + '">■</tspan> ' + esc(s.name) + '  ').join('');
+  out += '<text x="' + (w - pad) + '" y="14" font-size="12" text-anchor="end">' + legend + '</text>';
+  if (dates && dates.length) {
+    out += '<text x="' + (w - pad) + '" y="' + (h - 6) + '" font-size="12" fill="#656d76" text-anchor="end">' +
+      esc(dates[0]) + ' ~ ' + esc(dates[dates.length - 1]) + '</text>';
+  }
+  out += '</svg>';
+  return out;
+}
 
 // ── 概览 ────────────────────────────────────────────────────────────────
 async function renderOverview() {
