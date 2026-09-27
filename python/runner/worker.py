@@ -259,6 +259,21 @@ def get_fundamentals(security, table, fields=None, date=None, start_year=None, e
     return result.loc[:, columns]
 
 
+def _unsupported_trade_api(name):
+    """回测不支持的下单/行情 API(与 quantbt 的 unsupported_trade_api 一致)。"""
+    def _raise(*_args, **_kwargs):
+        raise RuntimeError("{} is not available in PTrade backtest mode".format(name))
+    return _raise
+
+
+def run_interval(context, func, time="every_bar", interval="1m"):
+    return _unsupported_trade_api("run_interval")()
+
+
+def get_snapshot(security):
+    return _unsupported_trade_api("get_snapshot")()
+
+
 def set_universe(security_list):
     return _rpc.call("set_universe", securities=_as_list(security_list))
 
@@ -600,6 +615,7 @@ class Runner:
             "set_fixed_slippage": set_fixed_slippage,
             "set_volume_ratio": set_volume_ratio, "set_limit_mode": set_limit_mode,
             "run_daily": run_daily,
+            "run_interval": run_interval, "get_snapshot": get_snapshot,
             "params": dict(params or {}),
             "g_params": dict(params or {}),
             "_types": _types,
