@@ -32,6 +32,12 @@ Go 回测引擎修改后,验证其与参照实现 quantbt(PTrade 兼容,已由 5
    python harness/scripts/parity_check.py --cases harness/assets/quant-minute-cases.json --check-logs
    ```
 
+   **公司行动对拍**(除权除息/送转/配股/红利税,2020 前后多个区间):
+
+   ```bash
+   python harness/scripts/parity_check.py --cases harness/assets/quant-corporate-cases.json --check-logs
+   ```
+
    单探针示例(注意 Go 侧预热按天,分钟模式默认 30 天):
 
    ```bash
@@ -61,6 +67,9 @@ Go 回测引擎修改后,验证其与参照实现 quantbt(PTrade 兼容,已由 5
   按 `harness/experience/bt-semantics-parity.md` 的语义清单排查。
 - 已覆盖(日线):P01 市价买卖 / P02 限价挂单与撤单 / P03 T+1 / P04 目标单取整 /
   P05 资金与成交量上限 / P06 费用滑点变体 / P07 多标的组合 / P08 生命周期与 run_daily。
+- 已覆盖(公司行动,12 用例):分红+送转入账 / 日线生命周期 / 红利税(含边界、
+  持有满一年、结算日)/ 零股送转取整 / 跨标的公司行动现金 / 多笔配股现金 /
+  配股 / 配股现金不足 / 候选事件扫描(get_stock_exrights 全量)。
 - 已覆盖(分钟,19 用例):分钟基线(日线 history/账户)/ T+1 与剩余成本 /
   可成交限价与部分成交自动撤余量 / 市价与目标单量额上限 / 资金上限取整 /
   UNLIMITED 跳过量上限 / value 与 target_value 取整 / 资金上限挂单缩量 /
@@ -70,13 +79,14 @@ Go 回测引擎修改后,验证其与参照实现 quantbt(PTrade 兼容,已由 5
 
 ## 边界与未覆盖
 
-- 公司行动(分红/送转/配股)未实现,相关探针(`ptrade_alignment_corporate_*`、
-  `dividend_tax_*`、`rights_*`、`fractional_allotment` 等)未纳入对拍。
-- `get_fundamentals`、`get_stock_exrights` 仅占位;`tick_data`/`on_order_response` 等未实现。
+- `get_fundamentals`(估值表)未实现;`tick_data`/`on_order_response` 等未实现。
+- `ptrade_alignment_mixed_corporate_action_candidates.py` 依赖 PTrade 的
+  `get_Ashares`(quantbt 亦不提供),无法对拍,已排除在用例集外。
 - 分钟模式为按交易日滚动窗口加载(默认 30 天),超长区间/大股票池的内存与速度优化未做。
 
 ## 最近验证
 
-2026-09-27:日线 8 探针全通过;分钟 19 用例全通过(净值/委托/成交/日志四项);
+2026-09-27:日线 8 探针、分钟 19 用例、公司行动 12 用例全通过(净值/委托/成交/日志四项);
 Go 单测全绿。分钟引擎实现期间修复了扫描引擎跨月分区剪枝丢数据的缺陷(见
-`harness/experience/scan-engine-pruning.md`)。
+`harness/experience/scan-engine-pruning.md`);公司行动对拍期间修复了旧湖
+2022 年公司行动日期迁移损坏(见 `harness/experience/bt-semantics-parity.md`)。

@@ -51,6 +51,7 @@
 - 分钟回测:加 `--frequency 1m --warmup 30`(`--warmup` 为预热交易日数)
 - 双引擎对拍:`python harness/scripts/parity_check.py --all --check-logs`(日线)
 - 分钟对拍:`python harness/scripts/parity_check.py --cases harness/assets/quant-minute-cases.json --check-logs`
+- 公司行动对拍:`python harness/scripts/parity_check.py --cases harness/assets/quant-corporate-cases.json --check-logs`
 - 数据导入:`go run ./cmd/quantd import --dataset stock_basic --lake D:\quant-lake`
 - 扫描诊断:`go run ./tools/lakediag --lake D:\quant-lake --dataset bars_daily --filter ts_code=600000.SH --start 20240101 --end 20241231`
 - 部署到 NAS:`harness/workflow/deploy-nas.md`

@@ -69,7 +69,7 @@ POST 策略+参数 → 作业队列 → { Go 引擎 ⇄ Python 策略子进程 }
 - 行情:`get_history(count, frequency, field, security_list, fq, include, fill, is_dict)` /
   `get_price(...)`;`fq` 支持 `None/post/pre`;停牌日按 PTrade 语义(价格取前值、成交量为 0)
 - 交易:`order / order_target / order_value / order_target_value / cancel_order`
-- 查询:`get_order(s) / get_open_orders / get_trades / get_position(s)`
+- 查询:`get_order(s) / get_open_orders / get_trades / get_position(s) / get_stock_exrights`
 - 设置:`set_universe / set_benchmark / set_commission / set_slippage / set_fixed_slippage /
   set_volume_ratio / set_limit_mode`
 - 超参数注入:策略内读 `params["fast"]`(也提供 `g_params` 同义别名)

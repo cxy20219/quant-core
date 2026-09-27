@@ -73,6 +73,29 @@
    取 `end_date` 当天 0 点前 1 微秒(即前一自然日结束),按 count 取尾部;
    分钟日程只含**交易日**(把周末/假日也排进去会产生虚假 Bar)。
 
+## 公司行动语义(2026-09-27 补齐)
+
+1. **入账公式**(quantbt 的 `apply_corporate_actions`):
+   - 送转股 = `int(持仓 × allotted_ps)`,配股 = `int(持仓 × rationed_ps)`;
+   - 分红现金 = `持仓 × bonus_ps × 0.8`(统一代扣 20% 红利税,quantbt 无持有期分档);
+   - 配股款 = `配股数 × rationed_px`,现金充足才执行;不足时:无送转且无分红 → 跳过,
+     否则视为未验证组合直接报错;
+   - 现金 += 分红现金 − 配股款;持仓 += 送转 + 配股;成本价 = (原成本 − 分红现金 + 配股款) / 新持仓。
+2. **处理顺序**:同日多事件时先配股(rationed_ps>0)后送转/分红,组内按代码升序;
+   空持仓直接跳过。
+3. **执行时点**:每个交易日在盘前(08:30)执行,早于 `before_trading_start`;
+   日线与分钟模式一致。
+4. **账户估值刷新时点**:`portfolio_value` 只在 `mark_to_market` 与**即时成交**后重算;
+   公司行动、挂单冻结、挂单到期都不重算(策略在 `before_trading_start` 读到的
+   `portfolio_value` 是除权前的值,与 PTrade 一致)。快照读取已存储值,不要按需重算。
+5. **空持仓也会被登记**:`get_position` 对未持有标的创建零持仓(quantbt 的 `setdefault`),
+   使 `last_sale_price` 随行情更新;`context.portfolio.positions` 的键是
+   **策略原始代码**(策略写 `.SS` 就是 `.SS`)。
+6. **`get_stock_exrights`**:返回 DataFrame,index 为 `YYYYMMDD` 整数,列顺序为
+   `allotted_ps, rationed_ps, rationed_px, bonus_ps, exer_forward_a/b, exer_backward_a/b`;
+   指定日期无事件返回 `None`,未指定日期返回**空表**(不是 None);日期参数兼容字符串与整数。
+   数据按证券**全量**加载(不限回测区间),否则候选扫描类探针计数会少。
+
 ## 代码规范(策略侧)
 
 - 策略侧看到的代码**保留其原始写法**(策略写 `.SS` 就显示 `.SS`,写 `.SH` 就显示 `.SH`);
@@ -96,7 +119,7 @@
 
 ## 边界
 
-- 公司行动(分红/送转/配股)与 `get_fundamentals` 未实现,相关探针未纳入对拍;
+- `get_fundamentals`(估值表)未实现;
 - 分钟数据按交易日滚动窗口加载(默认 30 天),超长区间/大股票池未做内存与速度优化;
 - 分钟停牌填充的 `money` 为 NaN,若策略直接比较 NaN 需自行处理(与 PTrade 一致)。
 
