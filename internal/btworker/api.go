@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
+	"time"
 
 	"quant-core/internal/btengine"
 	"quant-core/internal/schema"
@@ -17,10 +19,10 @@ func (w *Worker) Initialize(host *btengine.Host, cfg btengine.Config) error {
 		return err
 	}
 	meta := map[string]any{
-		"capital_base": cfg.CapitalBase,
-		"start_date":   cfg.StartDate.Format("2006-01-02"),
-		"end_date":     cfg.EndDate.Format("2006-01-02"),
-		"frequency":    cfg.Frequency,
+		"capital_base":  cfg.CapitalBase,
+		"start_date":    cfg.StartDate.Format("2006-01-02"),
+		"end_date":      cfg.EndDate.Format("2006-01-02"),
+		"frequency":     cfg.Frequency,
 		"strategy_name": cfg.StrategyName,
 	}
 	params := cfg.Params
@@ -44,7 +46,9 @@ func (w *Worker) Initialize(host *btengine.Host, cfg btengine.Config) error {
 
 // BeforeTradingStart 触发 before_trading_start。
 func (w *Worker) BeforeTradingStart() error {
-	if err := w.send(&message{Type: "phase", Name: "before_trading_start", Day: w.host.dayString(), Portfolio: w.host.portfolioJSON()}); err != nil {
+	w.phase = "before_trading_start"
+	defer func() { w.phase = "" }()
+	if err := w.send(&message{Type: "phase", Name: "before_trading_start", Day: w.host.clockText(), PreviousDay: w.host.previousDayString(), Portfolio: w.host.portfolioJSON()}); err != nil {
 		return err
 	}
 	return w.waitDone("before_trading_start")
@@ -53,28 +57,40 @@ func (w *Worker) BeforeTradingStart() error {
 // HandleData 触发 handle_data。
 func (w *Worker) HandleData(snapshot map[string]btengine.BarSnapshot) error {
 	bars := make(map[string]map[string]any, len(snapshot))
+	clock := w.host.clockText()
 	for code, bar := range snapshot {
-		// 策略侧使用 PTrade 代码(.SS/.SZ/.JY)
+		// 与 quantbt 一致:dt/open/close/price/low/high/volume/money(成交额)
 		bars[w.host.display(code)] = map[string]any{
-			"open": bar.Open, "high": bar.High, "low": bar.Low,
-			"close": bar.Close, "volume": bar.Volume, "amount": bar.Amount,
+			"dt":     clock,
+			"open":   bar.Open,
+			"close":  bar.Close,
+			"price":  bar.Close,
+			"low":    bar.Low,
+			"high":   bar.High,
+			"volume": bar.Volume,
+			"money":  nanToNil(bar.Amount),
 		}
 	}
 	if err := w.send(&message{
 		Type:        "bar",
-		Day:         w.host.dayString(),
+		Day:         w.host.clockText(),
+		Time:        w.host.clockHM(),
 		PreviousDay: w.host.previousDayString(),
 		Bars:        bars,
 		Portfolio:   w.host.portfolioJSON(),
 	}); err != nil {
 		return err
 	}
+	w.phase = "handle_data"
+	defer func() { w.phase = "" }()
 	return w.waitDone("handle_data")
 }
 
 // RunDaily 触发 run_daily 注册的回调。
 func (w *Worker) RunDaily() error {
-	if err := w.send(&message{Type: "phase", Name: "run_daily", Day: w.host.dayString(), Portfolio: w.host.portfolioJSON()}); err != nil {
+	w.phase = "run_daily"
+	defer func() { w.phase = "" }()
+	if err := w.send(&message{Type: "phase", Name: "run_daily", Day: w.host.clockText(), Time: w.host.clockHM(), Portfolio: w.host.portfolioJSON()}); err != nil {
 		return err
 	}
 	return w.waitDone("run_daily")
@@ -82,7 +98,9 @@ func (w *Worker) RunDaily() error {
 
 // AfterTradingEnd 触发 after_trading_end。
 func (w *Worker) AfterTradingEnd() error {
-	if err := w.send(&message{Type: "phase", Name: "after_trading_end", Day: w.host.dayString()}); err != nil {
+	w.phase = "after_trading_end"
+	defer func() { w.phase = "" }()
+	if err := w.send(&message{Type: "phase", Name: "after_trading_end", Day: w.host.clockText()}); err != nil {
 		return err
 	}
 	return w.waitDone("after_trading_end")
@@ -173,13 +191,30 @@ func (w *Worker) dispatch(method string, raw json.RawMessage) (any, error) {
 }
 
 type historyParams struct {
-	Count        int      `json:"count"`
-	Frequency    string   `json:"frequency"`
-	Field        string   `json:"field"`
-	SecurityList []string `json:"security_list"`
-	FQ           *string  `json:"fq"`
-	Include      bool     `json:"include"`
-	Fill         string   `json:"fill"`
+	Count        int       `json:"count"`
+	Frequency    string    `json:"frequency"`
+	Field        fieldSpec `json:"field"`
+	SecurityList []string  `json:"security_list"`
+	FQ           *string   `json:"fq"`
+	Include      bool      `json:"include"`
+	Fill         string    `json:"fill"`
+}
+
+// fieldSpec 接受单个字段名或字段名列表(PTrade 的 field 两种写法都支持)。
+type fieldSpec []string
+
+func (f *fieldSpec) UnmarshalJSON(data []byte) error {
+	var single string
+	if err := json.Unmarshal(data, &single); err == nil {
+		*f = fieldSpec{single}
+		return nil
+	}
+	var list []string
+	if err := json.Unmarshal(data, &list); err != nil {
+		return err
+	}
+	*f = fieldSpec(list)
+	return nil
 }
 
 func (w *Worker) rpcHistory(raw json.RawMessage) (any, error) {
@@ -200,9 +235,12 @@ func (w *Worker) rpcHistory(raw json.RawMessage) (any, error) {
 	if p.Count <= 0 {
 		p.Count = 1
 	}
-	field := p.Field
-	if field == "" {
-		field = "close"
+	fields := []string(p.Field)
+	if len(fields) == 0 {
+		fields = []string{"close"}
+	}
+	if normalizeFrequency(p.Frequency) == "1m" {
+		return w.rpcMinuteHistory(securities, fields, p.Count, p.Include, p.FQ)
 	}
 	// include=False:截止到当前交易日之前(首日则取数据中的上一交易日)
 	cutoff := w.host.currentDay - 1
@@ -216,8 +254,10 @@ func (w *Worker) rpcHistory(raw json.RawMessage) (any, error) {
 	}
 	data := map[string]map[string][]any{}
 	for _, sec := range securities {
-		values := w.host.valuesFor(sec, field, calendar, fq, cutoff)
-		data[sec] = map[string][]any{field: values}
+		data[sec] = map[string][]any{}
+		for _, field := range fields {
+			data[sec][field] = w.host.valuesFor(sec, field, calendar, fq, cutoff)
+		}
 	}
 	dates := make([]string, len(calendar))
 	for i, d := range calendar {
@@ -226,7 +266,7 @@ func (w *Worker) rpcHistory(raw json.RawMessage) (any, error) {
 	return map[string]any{
 		"dates":      dates,
 		"securities": w.host.displayList(securities),
-		"fields":     []string{field},
+		"fields":     fields,
 		"data":       w.host.displayKeyedData(data),
 	}, nil
 }
@@ -246,6 +286,10 @@ func (w *Worker) rpcPrice(raw json.RawMessage) (any, error) {
 	}
 	if p.Security == "" {
 		return nil, fmt.Errorf("get_price: security 必填")
+	}
+	p.Security = toInternalCode(p.Security)
+	if normalizeFrequency(p.Frequency) == "1m" {
+		return w.rpcMinutePrice(p.Security, p.StartDate, p.EndDate, p.Fields, p.Count, p.FQ)
 	}
 	count := 1
 	if p.Count != nil && *p.Count > 0 {
@@ -306,6 +350,10 @@ func (w *Worker) rpcOrder(method string, raw json.RawMessage) (any, error) {
 		return nil, err
 	}
 	p.Security = toInternalCode(p.Security)
+	// 与 quantbt 一致:handle_data 内下单前先撮合当前 Bar 可成交的挂单
+	if w.phase == "handle_data" {
+		w.host.broker.MatchPending(w.host.currentBars)
+	}
 	bar, ok := w.host.currentBars[p.Security]
 	if !ok {
 		// 与 PTrade 一致:无当前行情时不下单,返回 None
@@ -346,7 +394,8 @@ func (w *Worker) rpcOrder(method string, raw json.RawMessage) (any, error) {
 	if order == nil {
 		return nil, nil
 	}
-	return orderJSONWith(order, w.host.display), nil
+	// 与 PTrade/quantbt 一致:order() 返回委托编号(字符串),None 表示未受理
+	return order.ID, nil
 }
 
 func (w *Worker) rpcCancel(raw json.RawMessage) (any, error) {
@@ -373,17 +422,21 @@ func (w *Worker) rpcQuery(method string, raw json.RawMessage) (any, error) {
 	switch method {
 	case "get_order":
 		order := w.host.broker.GetOrder(p.OrderID)
-		if order == nil {
-			return nil, nil
+		// 与 quantbt 一致:非当日委托或不存在时返回空列表
+		if !w.host.broker.OrderOnDay(order) {
+			return []map[string]any{}, nil
 		}
-		return orderJSONWith(order, w.host.display), nil
+		return []map[string]any{orderJSONWith(order, toOrderSymbol)}, nil
 	case "get_orders":
 		out := []map[string]any{}
 		for _, o := range w.host.broker.Orders() {
 			if p.Security != "" && o.Security != p.Security {
 				continue
 			}
-			out = append(out, orderJSONWith(o, w.host.display))
+			if !w.host.broker.OrderOnDay(o) {
+				continue
+			}
+			out = append(out, orderJSONWith(o, toOrderSymbol))
 		}
 		return out, nil
 	case "get_open_orders":
@@ -392,20 +445,32 @@ func (w *Worker) rpcQuery(method string, raw json.RawMessage) (any, error) {
 			if p.Security != "" && o.Security != p.Security {
 				continue
 			}
-			out = append(out, orderJSONWith(o, w.host.display))
+			out = append(out, orderJSONWith(o, toOrderSymbol))
 		}
 		return out, nil
 	case "get_trades":
-		out := map[string][][]any{}
+		// 按首次成交顺序输出 [[order_id, 成交行...], ...](quantbt 的 trades 是 OrderedDict)
+		order := []string{}
+		rows := map[string][][]any{}
 		for _, tr := range w.host.broker.Trades() {
+			if !w.host.broker.OrderOnDay(w.host.broker.GetOrder(tr.OrderID)) {
+				continue
+			}
 			side := "买"
 			if tr.Side == "sell" {
 				side = "卖"
 			}
-			out[tr.OrderID] = append(out[tr.OrderID], []any{
-				tr.TradeID, tr.OrderID, toOrderSymbol(tr.Security), side,
+			if _, ok := rows[tr.OrderID]; !ok {
+				order = append(order, tr.OrderID)
+			}
+			rows[tr.OrderID] = append(rows[tr.OrderID], []any{
+				tr.TradeID, strconv.FormatInt(tr.EntrustNo, 10), toOrderSymbol(tr.Security), side,
 				float64(tr.Amount), tr.Price, tr.Value, tr.TradeTime,
 			})
+		}
+		out := make([][]any, 0, len(order))
+		for _, id := range order {
+			out = append(out, []any{id, rows[id]})
 		}
 		return out, nil
 	case "get_position":
@@ -555,3 +620,154 @@ func filterFrom(days []int64, from int64) []int64 {
 }
 
 var _ = math.Abs
+
+// rpcMinutePrice 分钟 get_price(与 quantbt 的 _minute_price 一致):
+// 截止时间取 end_date 当天 0 点前 1 微秒(即前一自然日结束),count 取最近 N 根。
+func (w *Worker) rpcMinutePrice(sec, startDate, endDate string, fields []string, count *int, fq *string) (any, error) {
+	engine := w.host.host.Engine
+	if engine.Minute == nil {
+		return nil, fmt.Errorf("分钟数据未初始化(请使用 frequency=1m 回测)")
+	}
+	endMicros := w.host.currentMicros()
+	if endDate != "" {
+		if t, ok := parseDateTimeMicros(endDate); ok {
+			endMicros = t
+		}
+	}
+	cutoff := MicrosToDay(endMicros)*86400*1_000_000 - 1
+	if len(fields) == 0 {
+		fields = []string{"close"}
+	}
+	var bars []MinuteBarAlias
+	if count != nil && *count > 0 {
+		bars = engine.Minute.BarsUpTo(sec, cutoff, *count)
+	} else {
+		lo := int64(0)
+		if startDate != "" {
+			if t, ok := parseDateTimeMicros(startDate); ok {
+				lo = t
+			}
+		}
+		bars = engine.Minute.BarsBetween(sec, lo, cutoff)
+	}
+	data := map[string][]any{}
+	for _, field := range fields {
+		values := make([]any, 0, len(bars))
+		for _, bar := range bars {
+			values = append(values, minuteFieldValue(bar, field))
+		}
+		data[field] = values
+	}
+	dates := make([]string, 0, len(bars))
+	for _, bar := range bars {
+		dates = append(dates, MicrosToTime(bar.Micros).Format("2006-01-02 15:04:05"))
+	}
+	return map[string]any{
+		"dates":      dates,
+		"securities": []string{w.host.display(sec)},
+		"fields":     fields,
+		"data":       w.host.displayKeyedData(map[string]map[string][]any{sec: data}),
+	}, nil
+}
+
+// parseDateTimeMicros 解析 "2006-01-02 15:04[:05]" 或 "2006-01-02" 为 micros。
+func parseDateTimeMicros(text string) (int64, bool) {
+	text = strings.TrimSpace(text)
+	layouts := []string{"2006-01-02 15:04:05", "2006-01-02 15:04", "2006-01-02"}
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, text); err == nil {
+			return t.UnixMicro(), true
+		}
+	}
+	return 0, false
+}
+
+// nanToNil 把 NaN 转为 nil(Go JSON 不能编码 NaN;策略侧还原为 NaN)。
+func nanToNil(v float64) any {
+	if math.IsNaN(v) {
+		return nil
+	}
+	return v
+}
+
+// rpcMinuteHistory 分钟 K 线(get_history(count, '1m', ...))。
+// 截断到当前模拟分钟(即便算上 include=False),与 PTrade 一致。
+func (w *Worker) rpcMinuteHistory(securities []string, fields []string, count int, include bool, fq *string) (any, error) {
+	engine := w.host.host.Engine
+	if engine.Minute == nil {
+		return nil, fmt.Errorf("分钟数据未初始化(请使用 frequency=1m 回测)")
+	}
+	now := w.host.currentMicros()
+	if now == 0 {
+		now = w.host.currentDay * 86400 * 1_000_000
+	}
+	end := now
+	if !include {
+		end = now - 1
+	}
+	data := map[string]map[string][]any{}
+	for _, sec := range securities {
+		bars := engine.Minute.BarsUpTo(sec, end, count)
+		fieldsOut := map[string][]any{}
+		for _, field := range fields {
+			values := make([]any, 0, len(bars))
+			for _, bar := range bars {
+				values = append(values, minuteFieldValue(bar, field))
+			}
+			fieldsOut[field] = values
+		}
+		data[sec] = fieldsOut
+	}
+	// 以第一只证券的时间轴为准(策略通常单标的查询)
+	dateStrings := make([]string, 0, count)
+	if len(securities) > 0 {
+		bars := engine.Minute.BarsUpTo(securities[0], end, count)
+		for _, bar := range bars {
+			dateStrings = append(dateStrings, MicrosToTime(bar.Micros).Format("2006-01-02 15:04:05"))
+		}
+	}
+	return map[string]any{
+		"dates":      dateStrings,
+		"securities": w.host.displayList(securities),
+		"fields":     fields,
+		"data":       w.host.displayKeyedData(data),
+	}, nil
+}
+
+func minuteFieldValue(bar MinuteBarAlias, field string) any {
+	switch field {
+	case "open":
+		return bar.Open
+	case "high":
+		return bar.High
+	case "low":
+		return bar.Low
+	case "close", "price":
+		return bar.Close
+	case "volume", "vol":
+		return bar.Volume
+	case "amount", "money":
+		return nanToNil(bar.Amount)
+	default:
+		return bar.Close
+	}
+}
+
+// normalizeFrequency 归一化频率写法。
+func normalizeFrequency(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1m", "1min", "min", "minute":
+		return "1m"
+	default:
+		return "1d"
+	}
+}
+
+// MinuteBarAlias 便于读取分钟 Bar 字段。
+type MinuteBarAlias = btengine.MinuteBar
+
+// MicrosToTime 转发便于本包使用。
+func MicrosToTime(micros int64) time.Time { return btengine.MicrosToTime(micros) }
+
+// MicrosToDay 转发便于本包使用。
+func MicrosToDay(micros int64) int64 { return btengine.MicrosToDay(micros) }

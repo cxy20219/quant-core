@@ -152,8 +152,9 @@ func (p *DataPortal) loadDaily(securities []string) error {
 		sd.high = append(sd.high, num(row[3]))
 		sd.low = append(sd.low, num(row[4]))
 		sd.close = append(sd.close, num(row[5]))
-		sd.vol = append(sd.vol, num(row[6]))
-		sd.amt = append(sd.amt, num(row[7]))
+		// PTrade 单位:成交量 手→股(×100),成交额 千元→元(×1000)
+		sd.vol = append(sd.vol, num(row[6])*100)
+		sd.amt = append(sd.amt, num(row[7])*1000)
 	}
 	return cur.Err()
 }
@@ -288,7 +289,7 @@ func fieldOf(sd *secDaily, field string, i int) float64 {
 		return sd.close[i]
 	case "volume", "vol":
 		return sd.vol[i]
-	case "amount":
+	case "amount", "money":
 		return sd.amt[i]
 	default:
 		return sd.close[i]

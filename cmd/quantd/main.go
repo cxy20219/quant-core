@@ -184,6 +184,7 @@ func cmdBacktest(args []string) {
 	start := fs.String("start", "", "开始日期 YYYYMMDD(必需)")
 	end := fs.String("end", "", "结束日期 YYYYMMDD(必需)")
 	capital := fs.Float64("capital", 1_000_000, "初始资金")
+	frequency := fs.String("frequency", "1d", "回测频率: 1d / 1m")
 	benchmark := fs.String("benchmark", "", "基准代码(如 000300.SH)")
 	warmup := fs.Int("warmup", 365, "预热自然日数")
 	lakeDir := fs.String("lake", "lake", "数据湖根目录")
@@ -222,7 +223,7 @@ func cmdBacktest(args []string) {
 		StrategyName: filepath.Base(*strategyPath),
 		StartDate:    schema.TimeFromDays(startDays),
 		EndDate:      schema.TimeFromDays(endDays),
-		Frequency:    "1d",
+		Frequency:    *frequency,
 		CapitalBase:  *capital,
 		Benchmark:    *benchmark,
 		WarmupDays:   *warmup,

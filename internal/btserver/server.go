@@ -41,41 +41,41 @@ type Server struct {
 	Lake   *lake.Lake
 	Config Config
 
-	mu      sync.RWMutex
-	jobs    map[string]*Job
-	order   []string
-	sem     chan struct{}
-	Logf    func(format string, args ...any)
+	mu    sync.RWMutex
+	jobs  map[string]*Job
+	order []string
+	sem   chan struct{}
+	Logf  func(format string, args ...any)
 }
 
 // Job 是一次回测作业。
 type Job struct {
-	ID           string             `json:"id"`
-	Status       string             `json:"status"` // queued / running / done / failed
-	StrategyName string             `json:"strategy_name"`
-	Params       map[string]any     `json:"params,omitempty"`
-	Request      *BacktestRequest   `json:"request"`
-	CreatedAt    string             `json:"created_at"`
-	StartedAt    string             `json:"started_at,omitempty"`
-	FinishedAt   string             `json:"finished_at,omitempty"`
-	Error        string             `json:"error,omitempty"`
-	Result       *btengine.Result   `json:"result,omitempty"`
-	Summary      *JobSummary        `json:"summary,omitempty"`
+	ID           string           `json:"id"`
+	Status       string           `json:"status"` // queued / running / done / failed
+	StrategyName string           `json:"strategy_name"`
+	Params       map[string]any   `json:"params,omitempty"`
+	Request      *BacktestRequest `json:"request"`
+	CreatedAt    string           `json:"created_at"`
+	StartedAt    string           `json:"started_at,omitempty"`
+	FinishedAt   string           `json:"finished_at,omitempty"`
+	Error        string           `json:"error,omitempty"`
+	Result       *btengine.Result `json:"result,omitempty"`
+	Summary      *JobSummary      `json:"summary,omitempty"`
 }
 
 // JobSummary 是列表页使用的概要。
 type JobSummary struct {
-	ID            string  `json:"id"`
-	Status        string  `json:"status"`
-	StrategyName  string  `json:"strategy_name"`
-	CreatedAt     string  `json:"created_at"`
-	StartDate     string  `json:"start_date"`
-	EndDate       string  `json:"end_date"`
-	TotalReturn   float64 `json:"total_return"`
-	MaxDrawdown   float64 `json:"max_drawdown"`
-	SharpeRatio   float64 `json:"sharpe_ratio"`
-	OrderCount    int     `json:"order_count"`
-	TradeCount    int     `json:"trade_count"`
+	ID           string  `json:"id"`
+	Status       string  `json:"status"`
+	StrategyName string  `json:"strategy_name"`
+	CreatedAt    string  `json:"created_at"`
+	StartDate    string  `json:"start_date"`
+	EndDate      string  `json:"end_date"`
+	TotalReturn  float64 `json:"total_return"`
+	MaxDrawdown  float64 `json:"max_drawdown"`
+	SharpeRatio  float64 `json:"sharpe_ratio"`
+	OrderCount   int     `json:"order_count"`
+	TradeCount   int     `json:"trade_count"`
 }
 
 // BacktestRequest 是提交回测的请求体。
@@ -87,6 +87,7 @@ type BacktestRequest struct {
 	EndDate      string         `json:"end_date"`
 	CapitalBase  float64        `json:"capital_base"`
 	Benchmark    string         `json:"benchmark"`
+	Frequency    string         `json:"frequency"`
 	WarmupDays   int            `json:"warmup_days"`
 }
 
@@ -213,17 +214,22 @@ func (s *Server) run(job *Job) {
 	s.logf("backtest %s 开始: %s", job.ID[:8], job.StrategyName)
 
 	req := job.Request
+	freq := req.Frequency
+	if freq == "" {
+		freq = "1d"
+	}
 	startDays, _ := schema.ParseDate(req.StartDate)
 	endDays, _ := schema.ParseDate(req.EndDate)
 	cfg := btengine.Config{
 		StrategyName: req.StrategyName,
 		StartDate:    schema.TimeFromDays(startDays),
 		EndDate:      schema.TimeFromDays(endDays),
-		Frequency:    "1d",
-		CapitalBase:  req.CapitalBase,
-		Benchmark:    strings.TrimSpace(req.Benchmark),
-		WarmupDays:   req.WarmupDays,
-		Params:       job.Params,
+		Frequency:    freq,
+
+		CapitalBase: req.CapitalBase,
+		Benchmark:   strings.TrimSpace(req.Benchmark),
+		WarmupDays:  req.WarmupDays,
+		Params:      job.Params,
 	}
 
 	worker := btworker.New(btworker.Config{

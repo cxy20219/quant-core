@@ -1,0 +1,192 @@
+[
+ {
+  "test": "test_minute_alignment_baseline",
+  "probe": "ptrade_alignment_daily.py",
+  "start": "2020-01-02",
+  "end": "2020-01-10",
+  "frequency": "1m",
+  "capital": 1000000.0,
+  "warmup_bars": 5.0,
+  "warmup_days": 800
+ },
+ {
+  "test": "test_minute_trade_state_applies_t_plus_one_and_remaining_cost_basis",
+  "probe": "ptrade_alignment_trade_state.py",
+  "start": "2020-01-02",
+  "end": "2020-01-03",
+  "frequency": "1m",
+  "capital": 1000000.0,
+  "warmup_bars": 5.0,
+  "warmup_days": 800
+ },
+ {
+  "test": "test_marketable_limit_volume_cap_fills_once_and_auto_cancels_remainder",
+  "probe": "ptrade_alignment_matrix_v2.py",
+  "start": "2020-01-02",
+  "end": "2020-01-03",
+  "frequency": "1m",
+  "capital": 1000000.0,
+  "warmup_bars": 5.0,
+  "warmup_days": 800
+ },
+ {
+  "test": "test_market_sell_and_target_sell_auto_cancel_volume_capped_remainders",
+  "probe": "ptrade_alignment_matrix_v3.py",
+  "start": "2020-01-02",
+  "end": "2020-01-03",
+  "frequency": "1m",
+  "capital": 1000000.0,
+  "warmup_bars": 5.0,
+  "warmup_days": 800
+ },
+ {
+  "test": "test_buy_and_target_buy_handle_volume_capped_remainders_like_ptrade",
+  "probe": "ptrade_alignment_matrix_v4.py",
+  "start": "2020-01-02",
+  "end": "2020-01-02",
+  "frequency": "1m",
+  "capital": 1000000.0,
+  "warmup_bars": 5.0,
+  "warmup_days": 800
+ },
+ {
+  "test": "test_cash_capped_buy_uses_affordable_order_amount_without_partial_status",
+  "probe": "ptrade_alignment_matrix_v5.py",
+  "start": "2020-01-02",
+  "end": "2020-01-02",
+  "frequency": "1m",
+  "capital": 10000.0,
+  "warmup_bars": 5.0,
+  "warmup_days": 800
+ },
+ {
+  "test": "test_unlimited_limit_mode_skips_volume_cap",
+  "probe": "ptrade_alignment_unlimited_volume.py",
+  "start": "2020-01-02",
+  "end": "2020-01-02",
+  "frequency": "1m",
+  "capital": 1000000.0,
+  "warmup_bars": 5.0,
+  "warmup_days": 800
+ },
+ {
+  "test": "test_value_orders_round_to_lots_and_target_zero_closes_position",
+  "probe": "ptrade_alignment_value_orders.py",
+  "start": "2020-01-02",
+  "end": "2020-01-03",
+  "frequency": "1m",
+  "capital": 1000000.0,
+  "warmup_bars": 5.0,
+  "warmup_days": 800
+ },
+ {
+  "test": "test_target_value_rounds_target_shares_down_to_lot",
+  "probe": "ptrade_alignment_target_value.py",
+  "start": "2020-01-02",
+  "end": "2020-01-02",
+  "frequency": "1m",
+  "capital": 1000000.0,
+  "warmup_bars": 5.0,
+  "warmup_days": 800
+ },
+ {
+  "test": "test_cash_capped_pending_buy_resizes_before_freezing_cash",
+  "probe": "ptrade_alignment_matrix_v6.py",
+  "start": "2020-01-02",
+  "end": "2020-01-02",
+  "frequency": "1m",
+  "capital": 10000.0,
+  "warmup_bars": 5.0,
+  "warmup_days": 800
+ },
+ {
+  "test": "test_limit_price_sessions_allow_market_orders_without_extra_rejection",
+  "probe": "ptrade_alignment_price_limits.py",
+  "start": "2020-01-02",
+  "end": "2020-01-23",
+  "frequency": "1m",
+  "capital": 1000000.0,
+  "warmup_bars": 5.0,
+  "warmup_days": 800
+ },
+ {
+  "test": "test_suspended_security_uses_previous_close_and_zero_volume_bar",
+  "probe": "ptrade_alignment_suspension.py",
+  "start": "2020-02-26",
+  "end": "2020-03-06",
+  "frequency": "1m",
+  "capital": 1000000.0,
+  "warmup_bars": 5.0,
+  "warmup_days": 800
+ },
+ {
+  "test": "test_limit_order_matches_after_minute_handle_data",
+  "probe": "ptrade_alignment_limit_fill.py",
+  "start": "2020-01-02",
+  "end": "2020-01-02",
+  "frequency": "1m",
+  "capital": 1000000.0,
+  "warmup_bars": 5.0,
+  "warmup_days": 800
+ },
+ {
+  "test": "test_triggered_limit_buy_uses_volume_cap_and_auto_cancels_remainder",
+  "probe": "ptrade_alignment_matrix_v7.py",
+  "start": "2020-01-02",
+  "end": "2020-01-02",
+  "frequency": "1m",
+  "capital": 1000000.0,
+  "warmup_bars": 5.0,
+  "warmup_days": 800
+ },
+ {
+  "test": "test_zero_slippage_triggered_limit_sell_uses_volume_cap_and_actual_fill_fees",
+  "probe": "ptrade_alignment_matrix_v8.py",
+  "start": "2020-01-02",
+  "end": "2020-01-03",
+  "frequency": "1m",
+  "capital": 1000000.0,
+  "warmup_bars": 5.0,
+  "warmup_days": 800
+ },
+ {
+  "test": "test_order_api_matches_eligible_pending_orders_before_new_market_order",
+  "probe": "ptrade_alignment_volume_competition.py",
+  "start": "2020-01-02",
+  "end": "2020-01-03",
+  "frequency": "1m",
+  "capital": 1000000.0,
+  "warmup_bars": 5.0,
+  "warmup_days": 800
+ },
+ {
+  "test": "test_pending_limits_share_bar_volume_by_submission_order_and_continue_next_bar",
+  "probe": "ptrade_alignment_pending_continuation.py",
+  "start": "2020-01-02",
+  "end": "2020-01-03",
+  "frequency": "1m",
+  "capital": 1000000.0,
+  "warmup_bars": 5.0,
+  "warmup_days": 800
+ },
+ {
+  "test": "test_triggered_limits_use_independent_volume_caps_across_securities",
+  "probe": "ptrade_alignment_cross_security_volume.py",
+  "start": "2020-01-02",
+  "end": "2020-01-02",
+  "frequency": "1m",
+  "capital": 1000000.0,
+  "warmup_bars": 5.0,
+  "warmup_days": 800
+ },
+ {
+  "test": "test_cancelled_pending_orders_release_resources_for_same_callback_replacement",
+  "probe": "ptrade_alignment_same_callback_cancel_replace.py",
+  "start": "2020-01-02",
+  "end": "2020-01-03",
+  "frequency": "1m",
+  "capital": 1000000.0,
+  "warmup_bars": 5.0,
+  "warmup_days": 800
+ }
+]

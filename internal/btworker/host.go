@@ -72,6 +72,28 @@ func (v *hostView) setUniverse(raw []string) {
 	v.host.Universe = internal
 }
 
+// clockText 返回当前时钟文本(YYYY-MM-DD HH:MM:SS)。
+func (v *hostView) clockText() string {
+	return v.host.Engine.BrokerClockText()
+}
+
+// clockHM 返回当前时钟的 HH:MM(用于 run_daily 触发判定;日线模式为空)。
+func (v *hostView) clockHM() string {
+	if v.host.Engine.Config.Frequency != "1m" {
+		return ""
+	}
+	text := v.host.Engine.BrokerClockText()
+	if len(text) >= 16 {
+		return text[11:16]
+	}
+	return ""
+}
+
+// currentMicros 返回当前模拟时刻的 micros。
+func (v *hostView) currentMicros() int64 {
+	return v.host.Engine.BrokerCurrentMicros()
+}
+
 func (v *hostView) dayString() string {
 	v.sync()
 	if v.currentDay == 0 {

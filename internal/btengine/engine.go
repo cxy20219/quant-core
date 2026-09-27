@@ -45,31 +45,32 @@ type BarSnapshot struct {
 
 // Host 暴露给策略侧(通过 RPC)的引擎能力。
 type Host struct {
-	Engine   *Engine
-	Portal   *DataPortal
-	Broker   *Broker
+	Engine    *Engine
+	Portal    *DataPortal
+	Broker    *Broker
 	Portfolio *Portfolio
-	Config   Config
-	Universe []string
-	Logs     *[]LogRecord
+	Config    Config
+	Universe  []string
+	Logs      *[]LogRecord
 	// 当前状态
-	CurrentDay   int64
-	CurrentBars  map[string]Bar
-	PreviousDay  int64
+	CurrentDay  int64
+	CurrentBars map[string]Bar
+	PreviousDay int64
 }
 
 // Engine 是回测引擎。
 type Engine struct {
-	Lake     *lake.Lake
-	Config   Config
-	Portal   *DataPortal
-	Broker   *Broker
+	Lake      *lake.Lake
+	Config    Config
+	Portal    *DataPortal
+	Minute    *MinutePortal
+	Broker    *Broker
 	Portfolio *Portfolio
-	Logs     []LogRecord
-	Nav      []NavRow
-	runner   StrategyRunner
-	days     []int64
-	startTs  time.Time
+	Logs      []LogRecord
+	Nav       []NavRow
+	runner    StrategyRunner
+	days      []int64
+	startTs   time.Time
 }
 
 // NewEngine 创建引擎。
@@ -127,25 +128,43 @@ func (e *Engine) Run(runner StrategyRunner) (*Result, error) {
 		e.Portal.Adfactors(host.Universe)
 	}
 
+	var runErr error
+	if e.Config.Frequency == "1m" {
+		runErr = e.runMinute(host)
+	} else {
+		runErr = e.runDaily(host)
+	}
+	if runErr != nil {
+		return nil, runErr
+	}
+	if err := e.runner.Close(); err != nil {
+		return nil, err
+	}
+	return e.buildResult(), nil
+}
+
+// runDaily 日线主循环。
+func (e *Engine) runDaily(host *Host) error {
 	prevDay := int64(0)
-	for _, day := range days {
+	for _, day := range e.days {
 		host.PreviousDay = prevDay
 		host.CurrentDay = day
 		e.Broker.StartDay(day)
+		e.Broker.SetClock(day, dayString(day)+" 15:00:00")
 
 		// 每个交易日开始前,确保当前股票池数据已加载(策略可能在盘前切换股票池)
 		if len(host.Universe) > 0 {
 			if err := e.Portal.EnsureDaily(host.Universe); err != nil {
-				return nil, err
+				return err
 			}
 		}
 		if err := e.runner.BeforeTradingStart(); err != nil {
-			return nil, fmt.Errorf("%s before_trading_start: %w", dayString(day), err)
+			return fmt.Errorf("%s before_trading_start: %w", dayString(day), err)
 		}
 		// 盘前可能更新股票池
 		if len(host.Universe) > 0 {
 			if err := e.Portal.EnsureDaily(host.Universe); err != nil {
-				return nil, err
+				return err
 			}
 			e.Portal.Adfactors(host.Universe)
 		}
@@ -161,24 +180,17 @@ func (e *Engine) Run(runner StrategyRunner) (*Result, error) {
 		e.markToMarket(visible)
 		host.CurrentBars = visible
 
-		snapshot := make(map[string]BarSnapshot, len(visible))
-		for sec, bar := range visible {
-			snapshot[sec] = BarSnapshot{
-				Open: bar.Open, High: bar.High, Low: bar.Low,
-				Close: bar.Close, Volume: bar.Volume, Amount: bar.Amount,
-			}
-		}
-		if err := e.runner.HandleData(snapshot); err != nil {
-			return nil, fmt.Errorf("%s handle_data: %w", dayString(day), err)
+		if err := e.runner.HandleData(snapshotOf(visible)); err != nil {
+			return fmt.Errorf("%s handle_data: %w", dayString(day), err)
 		}
 		if err := e.runner.RunDaily(); err != nil {
-			return nil, fmt.Errorf("%s run_daily: %w", dayString(day), err)
+			return fmt.Errorf("%s run_daily: %w", dayString(day), err)
 		}
 		// 挂单撮合与重新估值
 		e.Broker.MatchPending(visible)
 		e.markToMarket(visible)
 		if err := e.runner.AfterTradingEnd(); err != nil {
-			return nil, fmt.Errorf("%s after_trading_end: %w", dayString(day), err)
+			return fmt.Errorf("%s after_trading_end: %w", dayString(day), err)
 		}
 		e.Broker.ExpirePending()
 
@@ -191,11 +203,14 @@ func (e *Engine) Run(runner StrategyRunner) (*Result, error) {
 		})
 		prevDay = day
 	}
-	if err := e.runner.Close(); err != nil {
-		return nil, err
-	}
-	return e.buildResult(), nil
+	return nil
 }
+
+// BrokerClockText 返回撮合器当前时钟文本(供 worker 生成策略可见时间)。
+func (e *Engine) BrokerClockText() string { return e.Broker.ClockText() }
+
+// BrokerCurrentMicros 返回当前 Bar 的 micros(日线模式为当日 15:00)。
+func (e *Engine) BrokerCurrentMicros() int64 { return e.Broker.ClockMicros() }
 
 // markToMarket 用当前 Bar 重新估值。
 func (e *Engine) markToMarket(bars map[string]Bar) {
@@ -410,10 +425,10 @@ func tradeAnalytics(trades []*Trade) map[string]any {
 		plr = (profit / float64(wins)) / (loss / float64(losses))
 	}
 	return map[string]any{
-		"win_rate":         wr,
+		"win_rate":          wr,
 		"profit_loss_ratio": plr,
-		"winning_count":    wins,
-		"losing_count":     losses,
+		"winning_count":     wins,
+		"losing_count":      losses,
 	}
 }
 
@@ -485,3 +500,105 @@ func (r *Result) MarshalJSON() ([]byte, error) {
 }
 
 var _ = sort.Ints
+
+// runMinute 分钟主循环(与 quantbt 的调用顺序一致):
+//
+//	日切换:08:30 盘前 → before_trading_start → 加载分钟窗口
+//	每根 Bar:估值 → handle_data → 撮合挂单 → 估值 → run_daily
+//	日末:15:30 after_trading_end → 挂单失效 → 记录日末净值
+func (e *Engine) runMinute(host *Host) error {
+	warmupDays := e.Config.WarmupDays
+	if warmupDays < 2 {
+		warmupDays = 2
+	}
+	e.Minute = NewMinutePortal(e.Lake, host.Universe, warmupDays)
+	e.Minute.SetPrevCloseProvider(e.Portal.CloseAt)
+	e.Minute.SetCalendar(e.Portal.TradingDaysInRange)
+	minutes := e.Minute.TradingMinutes(e.days)
+
+	activeDay := int64(0)
+	for i, micros := range minutes {
+		day := MicrosToDay(micros)
+		if day != activeDay {
+			activeDay = day
+			host.PreviousDay = host.CurrentDay
+			host.CurrentDay = day
+			e.Broker.StartDay(day)
+			e.Broker.SetClock(day*86400+8*3600+30*60, dayString(day)+" 08:30:00")
+			if len(host.Universe) > 0 {
+				if err := e.Portal.EnsureDaily(host.Universe); err != nil {
+					return err
+				}
+			}
+			if err := e.runner.BeforeTradingStart(); err != nil {
+				return fmt.Errorf("%s before_trading_start: %w", dayString(day), err)
+			}
+			if err := e.Minute.EnsureDay(day); err != nil {
+				return err
+			}
+			// 盘前可能切换股票池
+			e.Minute.SetSecurities(host.Universe)
+			if len(host.Universe) > 0 {
+				if err := e.Minute.EnsureDay(day); err != nil {
+					return err
+				}
+			}
+		}
+
+		visible := make(map[string]Bar)
+		for _, sec := range host.Universe {
+			if bar, ok := e.Minute.BarAt(sec, micros); ok {
+				visible[sec] = Bar{
+					Security: sec, Open: bar.Open, High: bar.High, Low: bar.Low,
+					Close: bar.Close, Volume: bar.Volume, Amount: bar.Amount,
+				}
+			}
+		}
+		e.Broker.SetClock(micros, MicrosToTime(micros).Format("2006-01-02 15:04:05"))
+		e.Broker.SetCurrentPrices(visible)
+		e.markToMarket(visible)
+		host.CurrentBars = visible
+
+		if err := e.runner.HandleData(snapshotOf(visible)); err != nil {
+			return fmt.Errorf("%s handle_data: %w", MicrosToTime(micros).Format("2006-01-02 15:04:05"), err)
+		}
+		e.Broker.MatchPending(visible)
+		e.markToMarket(visible)
+
+		if err := e.runner.RunDaily(); err != nil {
+			return fmt.Errorf("%s run_daily: %w", MicrosToTime(micros).Format("2006-01-02 15:04:05"), err)
+		}
+
+		e.Nav = append(e.Nav, NavRow{
+			Date:           MicrosToTime(micros).Format("2006-01-02 15:04:05"),
+			PortfolioValue: e.Portfolio.PortfolioValue,
+			Cash:           e.Portfolio.Cash,
+			PositionsValue: e.Portfolio.PositionsValue,
+			Returns:        e.Portfolio.Returns,
+		})
+
+		nextDay := int64(0)
+		if i+1 < len(minutes) {
+			nextDay = MicrosToDay(minutes[i+1])
+		}
+		if nextDay != day {
+			e.Broker.SetClock(day*86400+15*3600+30*60, dayString(day)+" 15:30:00")
+			if err := e.runner.AfterTradingEnd(); err != nil {
+				return fmt.Errorf("%s after_trading_end: %w", dayString(day), err)
+			}
+			e.Broker.ExpirePending()
+		}
+	}
+	return nil
+}
+
+func snapshotOf(bars map[string]Bar) map[string]BarSnapshot {
+	out := make(map[string]BarSnapshot, len(bars))
+	for sec, bar := range bars {
+		out[sec] = BarSnapshot{
+			Open: bar.Open, High: bar.High, Low: bar.Low,
+			Close: bar.Close, Volume: bar.Volume, Amount: bar.Amount,
+		}
+	}
+	return out
+}

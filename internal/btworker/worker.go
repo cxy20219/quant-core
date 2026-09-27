@@ -34,6 +34,9 @@ type Worker struct {
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
 	stdout *bufio.Reader
+	// phase 是当前回调阶段(handle_data/run_daily/...);order() 在 handle_data 内
+	// 需要先撮合可成交挂单(与 quantbt 的 _match_open_orders_before_order 一致)。
+	phase string
 }
 
 // New 创建 worker(不启动进程)。
@@ -70,22 +73,23 @@ func DefaultWorkerScript() string {
 
 // message 是协议消息(双向复用)。
 type message struct {
-	Type        string                     `json:"type"`
-	ID          int                        `json:"id,omitempty"`
-	Method      string                     `json:"method,omitempty"`
-	Params      json.RawMessage            `json:"params,omitempty"`
-	Result      json.RawMessage            `json:"result,omitempty"`
-	Error       string                     `json:"error,omitempty"`
-	Message     string                     `json:"message,omitempty"`
-	Traceback   string                     `json:"traceback,omitempty"`
-	Level       string                     `json:"level,omitempty"`
-	Name        string                     `json:"name,omitempty"`
-	Day         string                     `json:"day,omitempty"`
-	PreviousDay string                     `json:"previous_day,omitempty"`
-	StrategySrc string                     `json:"strategy_source,omitempty"`
-	Meta        map[string]any             `json:"meta,omitempty"`
-	Bars        map[string]map[string]any  `json:"bars,omitempty"`
-	Portfolio   map[string]any             `json:"portfolio,omitempty"`
+	Type        string                    `json:"type"`
+	ID          int                       `json:"id,omitempty"`
+	Method      string                    `json:"method,omitempty"`
+	Params      json.RawMessage           `json:"params,omitempty"`
+	Result      json.RawMessage           `json:"result,omitempty"`
+	Error       string                    `json:"error,omitempty"`
+	Message     string                    `json:"message,omitempty"`
+	Traceback   string                    `json:"traceback,omitempty"`
+	Level       string                    `json:"level,omitempty"`
+	Name        string                    `json:"name,omitempty"`
+	Day         string                    `json:"day,omitempty"`
+	Time        string                    `json:"time,omitempty"`
+	PreviousDay string                    `json:"previous_day,omitempty"`
+	StrategySrc string                    `json:"strategy_source,omitempty"`
+	Meta        map[string]any            `json:"meta,omitempty"`
+	Bars        map[string]map[string]any `json:"bars,omitempty"`
+	Portfolio   map[string]any            `json:"portfolio,omitempty"`
 }
 
 func (w *Worker) send(msg *message) error {

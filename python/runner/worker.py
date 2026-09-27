@@ -30,6 +30,8 @@ import json
 import sys
 import traceback
 from collections import OrderedDict
+from datetime import date as _date
+from datetime import datetime as _datetime
 
 try:
     import pandas as pd
@@ -83,13 +85,13 @@ _context = None  # 由 main 注入;下单后原地下钻刷新账户快照(PTrad
 def _refresh_portfolio():
     if _context is None:
         return
-    snapshot = _rpc.call("portfolio")
+    snapshot = _portfolio_snapshot(_rpc.call("portfolio"))
     portfolio = _context.get("portfolio")
     if portfolio is None:
-        _context["portfolio"] = _record(snapshot)
+        _context["portfolio"] = snapshot
     else:
         portfolio.clear()
-        portfolio.update(_record(snapshot))
+        portfolio.update(snapshot)
 
 
 # ── PTrade API(全局函数,策略直接调用)─────────────────────────────────
@@ -119,39 +121,46 @@ def order_target_value(security, value, limit_price=None):
 
 
 def cancel_order(order_param):
-    order_id = order_param.get("id") if isinstance(order_param, dict) else getattr(order_param, "id", order_param)
+    if isinstance(order_param, dict):
+        order_id = order_param.get("id")
+    else:
+        order_id = getattr(order_param, "id", order_param)
     result = _rpc.call("cancel_order", order_id=str(order_id))
     _refresh_portfolio()
     return result
 
 
 def get_order(order_id):
-    return _record(_rpc.call("get_order", order_id=str(order_id)))
+    """quantbt 语义:返回当日该委托的列表(不存在或非当日为空列表)。"""
+    return [Order(o) for o in _rpc.call("get_order", order_id=str(order_id))]
 
 
 def get_orders(security=None):
-    return [_record(o) for o in _rpc.call("get_orders", security=security)]
+    return [Order(o) for o in _rpc.call("get_orders", security=security)]
 
 
 def get_open_orders(security=None):
-    return [_record(o) for o in _rpc.call("get_open_orders", security=security)]
+    return [Order(o) for o in _rpc.call("get_open_orders", security=security)]
 
 
 def get_trades():
-    raw = _rpc.call("get_trades")
-    out = OrderedDict()
-    for order_id, rows in raw.items():
-        out[order_id] = [tuple(r) for r in rows]
+    """quantbt 语义:普通 dict{order_id: [成交行...]},成交行为列表。"""
+    out = {}
+    for order_id, rows in _rpc.call("get_trades"):
+        out[order_id] = [
+            [r[0], r[1], r[2], r[3], float(r[4]), float(r[5]), float(r[6]), r[7]]
+            for r in rows
+        ]
     return out
 
 
 def get_position(security):
-    return _record(_rpc.call("get_position", security=security))
+    return Position(_rpc.call("get_position", security=security))
 
 
 def get_positions(security=None):
     raw = _rpc.call("get_positions", security=security)
-    return {code: _record(pos) for code, pos in raw.items()}
+    return {code: Position(pos) for code, pos in raw.items()}
 
 
 def get_history(count, frequency="1d", field="close", security_list=None, fq=None,
@@ -220,7 +229,17 @@ def set_limit_mode(limit_mode="LIMIT"):
 def run_daily(context, func, time="9:31"):
     if getattr(context, "_runner", None) is None:
         raise RuntimeError("run_daily 必须在 initialize 内调用")
-    context._runner.append((func, str(time)))
+    scheduled = str(time).strip()
+    parts = scheduled.split(":")
+    if len(parts) != 2:
+        raise RuntimeError("run_daily time 需为 HH:MM")
+    hour, minute = int(parts[0]), int(parts[1])
+    # PTrade:13:00 不是可见分钟,顺延到 13:01
+    if hour == 13 and minute == 0:
+        scheduled = "13:01"
+    else:
+        scheduled = "%02d:%02d" % (hour, minute)
+    context._runner.append((func, scheduled))
     return None
 
 
@@ -234,6 +253,25 @@ def _as_list(value):
     return [str(v) for v in value]
 
 
+def _parse_dt(text):
+    """把时钟文本解析为 datetime(与 PTrade 的 context.blotter.current_dt 一致)。"""
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return _datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _parse_date(text):
+    if not text:
+        return None
+    parsed = _parse_dt(text)
+    return parsed.date() if parsed else None
+
+
 class AttrDict(dict):
     """支持属性访问的字典(PTrade 的 g / context / 返回值都是这种风格)。"""
 
@@ -245,6 +283,109 @@ class AttrDict(dict):
 
     def __setattr__(self, name, value):
         self[name] = value
+
+
+class PTradeObject:
+    """PTrade 风格对象:属性与下标双访问,repr 与 quantbt 数据类一致。"""
+
+    _fields = ()
+    _type = ""
+
+    def __init__(self, data):
+        self._data = dict(data)
+        for name in self._fields:
+            setattr(self, name, self._data.get(name))
+
+    def __getitem__(self, key):
+        return self._data[key]
+
+    def get(self, key, default=None):
+        return self._data.get(key, default)
+
+    def __repr__(self):
+        inner = ", ".join("%s=%r" % (name, getattr(self, name)) for name in self._fields)
+        return "%s(%s)" % (self._type, inner)
+
+
+class Order(PTradeObject):
+    """委托对象(字段与 quantbt.objects.Order 一致)。"""
+
+    _type = "Order"
+    _fields = ("id", "dt", "limit", "symbol", "amount", "created", "filled",
+               "entrust_no", "cancel_entrust_no", "priceGear", "status")
+
+    def __init__(self, data):
+        dt = _parse_dt(data.get("created_at"))
+        limit = None
+        if str(data.get("order_type")) == "limit":
+            limit = float(data.get("limit_price") or 0.0)
+        super().__init__({
+            "id": data.get("id"),
+            "dt": dt,
+            "limit": limit,
+            "symbol": data.get("security"),
+            "amount": int(data.get("amount") or 0),
+            "created": dt,
+            "filled": int(data.get("filled") or 0),
+            "entrust_no": None,
+            "cancel_entrust_no": None,
+            "priceGear": 0,
+            "status": str(data.get("status") or "0"),
+        })
+
+
+class SimulationParameters(PTradeObject):
+    """回测参数(字段与 quantbt.objects.SimulationParameters 一致)。"""
+
+    _type = "SimulationParameters"
+    _fields = ("capital_base", "data_frequency")
+
+
+class Position(PTradeObject):
+    """持仓对象(字段与 quantbt.objects.Position 一致)。"""
+
+    _type = "Position"
+    _fields = ("sid", "enable_amount", "amount", "last_sale_price", "cost_basis",
+               "business_type", "today_amount", "update_time")
+
+    def __init__(self, data):
+        super().__init__({
+            "sid": data.get("security"),
+            "enable_amount": int(data.get("enable_amount") or 0),
+            "amount": int(data.get("amount") or 0),
+            "last_sale_price": float(data.get("last_sale_price") or 0.0),
+            "cost_basis": float(data.get("cost_basis") or 0.0),
+            "business_type": "stock",
+            "today_amount": int(data.get("today_amount") or 0),
+            "update_time": None,
+        })
+
+
+def _bar_record(bar):
+    """行情切片:dt 解析为 datetime,数值转 float,缺失值还原为 NaN(与 quantbt 的 bar 一致)。"""
+    numeric = {"open", "close", "price", "low", "high", "volume", "money"}
+    out = AttrDict()
+    for key, value in (bar or {}).items():
+        if key == "dt":
+            out[key] = _parse_dt(value)
+        elif value is None:
+            out[key] = float("nan")
+        elif key in numeric:
+            out[key] = float(value)
+        else:
+            out[key] = value
+    return out
+
+
+def _portfolio_snapshot(data):
+    """把 Go 侧账户快照转为 PTrade 风格对象(持仓为 Position)。"""
+    out = AttrDict()
+    for key, value in (data or {}).items():
+        if key == "positions":
+            out[key] = {code: Position(pos) for code, pos in (value or {}).items()}
+        else:
+            out[key] = _record(value)
+    return out
 
 
 def _record(value):
@@ -363,8 +504,11 @@ class Runner:
     def handle_data(self, context, data) -> None:
         self.env["handle_data"](context, data)
 
-    def run_daily(self, context) -> None:
-        for func, _time in self.daily_jobs:
+    def run_daily(self, context, current_time: str = "") -> None:
+        """日线模式:current_time 为空,全部执行;分钟模式:仅执行到点的回调。"""
+        for func, scheduled in self.daily_jobs:
+            if current_time and scheduled != current_time:
+                continue
             func(context)
 
     def after_trading_end(self, context) -> None:
@@ -413,6 +557,11 @@ def main() -> int:
         meta = init.get("meta") or {}
         _context = context
         context["capital_base"] = meta.get("capital_base", 0.0)
+        frequency = str(meta.get("frequency") or "1d")
+        context["sim_params"] = SimulationParameters({
+            "capital_base": meta.get("capital_base", 0.0),
+            "data_frequency": frequency,
+        })
         runner.load(init.get("strategy_source", ""), init.get("params") or {})
         runner.initialize(context)
         _send({"type": "ready"})
@@ -422,21 +571,24 @@ def main() -> int:
             if mtype == "shutdown":
                 break
             if mtype == "bar":
-                context["blotter"]["current_dt"] = msg.get("day")
-                context["previous_date"] = msg.get("previous_day")
-                context["portfolio"] = _record(msg.get("portfolio") or {})
-                bars = {code: _record(bar) for code, bar in (msg.get("bars") or {}).items()}
+                context["blotter"]["current_dt"] = _parse_dt(msg.get("day"))
+                context["previous_date"] = _parse_date(msg.get("previous_day"))
+                context["portfolio"] = _portfolio_snapshot(msg.get("portfolio"))
+                bars = {code: _bar_record(bar) for code, bar in (msg.get("bars") or {}).items()}
                 runner.handle_data(context, bars)
                 _send({"type": "done"})
             elif mtype == "phase":
                 name = msg.get("name")
                 if name == "before_trading_start":
-                    context["blotter"]["current_dt"] = msg.get("day")
+                    context["blotter"]["current_dt"] = _parse_dt(msg.get("day"))
+                    context["previous_date"] = _parse_date(msg.get("previous_day"))
                     context["portfolio"] = _record(msg.get("portfolio") or {})
                     runner.before_trading_start(context)
                 elif name == "run_daily":
-                    runner.run_daily(context)
+                    context["blotter"]["current_dt"] = _parse_dt(msg.get("day")) or context["blotter"]["current_dt"]
+                    runner.run_daily(context, msg.get("time") or "")
                 elif name == "after_trading_end":
+                    context["blotter"]["current_dt"] = _parse_dt(msg.get("day")) or context["blotter"]["current_dt"]
                     runner.after_trading_end(context)
                 _send({"type": "done"})
             else:

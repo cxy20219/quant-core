@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"time"
 
 	"github.com/parquet-go/parquet-go"
 
@@ -531,8 +532,12 @@ func partitionAccept(ds *schema.Dataset, filter *Filter, explicit map[string][]s
 			years[fmt.Sprintf("%04d", y)] = true
 		}
 		if ds.HasPartition("month") {
-			for cursor := lo; !cursor.After(hi); cursor = cursor.AddDate(0, 1, 0) {
+			// 从 lo 所在月的 1 号开始迭代:否则按日号推进会跳过末月
+			// (如 lo=2019-12-29 → +1 月 = 2020-01-29 已越过 hi=2020-01-02)。
+			cursor := time.Date(lo.Year(), lo.Month(), 1, 0, 0, 0, 0, time.UTC)
+			for !cursor.After(hi) {
 				months[fmt.Sprintf("%04d-%02d", cursor.Year(), cursor.Month())] = true
+				cursor = cursor.AddDate(0, 1, 0)
 			}
 		}
 	}

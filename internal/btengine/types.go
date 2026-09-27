@@ -78,10 +78,10 @@ type Order struct {
 	OrigAmount int64   `json:"orig_amount"`
 
 	// 挂单冻结(仅未成交限价单):
-	ReservedCash float64 `json:"-"` // 已冻结现金 = 数量×限价×(1±滑点/2) + 费用
+	ReservedCash  float64 `json:"-"` // 已冻结现金 = 数量×限价×(1±滑点/2) + 费用
 	ReservedValue float64 `json:"-"` // 冻结时的成交估值(数量×限价×(1±滑点/2))
-	ReleasedCash float64 `json:"-"` // 到期释放现金 = 数量×限价
-	FrozenAmount int64   `json:"-"` // 已冻结股数(卖出挂单)
+	ReleasedCash  float64 `json:"-"` // 到期释放现金 = 数量×限价
+	FrozenAmount  int64   `json:"-"` // 已冻结股数(卖出挂单)
 }
 
 // Origin 返回原始委托数量(正买负卖)。
@@ -90,6 +90,7 @@ func (o *Order) Origin() int64 { return o.OrigAmount }
 // Trade 是成交。
 type Trade struct {
 	TradeID   string  `json:"trade_id"`
+	EntrustNo int64   `json:"entrust_no"`
 	OrderID   string  `json:"order_id"`
 	Security  string  `json:"security"`
 	Side      string  `json:"side"` // buy / sell
@@ -126,15 +127,15 @@ type NavRow struct {
 
 // Result 是回测结果。
 type Result struct {
-	StrategyName string       `json:"strategy_name"`
-	StartDate    string       `json:"start_date"`
-	EndDate      string       `json:"end_date"`
-	Portfolio    []NavRow     `json:"portfolio"`
-	Orders       []*Order     `json:"orders"`
-	Cancelled    []*Order     `json:"cancelled_orders,omitempty"` // 当日过期撤销的挂单(PTrade 订单列表不含它们)
-	Trades       []*Trade     `json:"trades"`
-	Logs         []LogRecord  `json:"logs"`
-	Summary      Summary      `json:"summary"`
+	StrategyName string         `json:"strategy_name"`
+	StartDate    string         `json:"start_date"`
+	EndDate      string         `json:"end_date"`
+	Portfolio    []NavRow       `json:"portfolio"`
+	Orders       []*Order       `json:"orders"`
+	Cancelled    []*Order       `json:"cancelled_orders,omitempty"` // 当日过期撤销的挂单(PTrade 订单列表不含它们)
+	Trades       []*Trade       `json:"trades"`
+	Logs         []LogRecord    `json:"logs"`
+	Summary      Summary        `json:"summary"`
 	Analytics    map[string]any `json:"analytics"`
 	Params       map[string]any `json:"params,omitempty"`
 }

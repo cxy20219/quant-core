@@ -4,9 +4,13 @@
 用法:
     python harness/scripts/parity_check.py --strategy examples/strategies/parity/p01_market_basic.py \
         [--start 2020-01-02] [--end 2020-01-10] [--capital 1000000] [--warmup-days 30] \
-        [--quant-data E:\AI-work\quant-data] [--lake D:\quant-lake]
+        [--frequency 1d] [--quant-data E:\AI-work\quant-data] [--lake D:\quant-lake]
 
-对比项:日终净值序列、委托字段、成交字段、期末资产与持仓;输出首个差异。
+对比项:净值序列、委托字段、成交字段、期末资产与持仓;输出首个差异。
+分钟对拍:
+    python harness/scripts/parity_check.py --frequency 1m --warmup-bars 5 \
+        --strategy E:\AI-work\quant-data\strategies\probes\ptrade_alignment_limit_order.py \
+        --start 2020-01-02 --end 2020-01-03
 """
 
 from __future__ import annotations
@@ -14,15 +18,23 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
+# 委托编号是随机串(quantbt 用 uuid4().hex),日志对比前归一化
+_ORDER_ID_RE = re.compile(r"\b[0-9a-f]{32}\b")
+
+
+def normalize_log(message: str) -> str:
+    return _ORDER_ID_RE.sub("<id>", message or "")
+
 
 def run_quantbt(strategy: str, start: str, end: str, capital: float, warmup_days: int,
-                quant_data: Path) -> dict:
-    """在 quantbt(参照实现)上运行日线回测,返回标准化的结果。"""
+                warmup_bars: int, frequency: str, quant_data: Path) -> dict:
+    """在 quantbt(参照实现)上运行回测,返回标准化的结果。"""
     code = f'''
 import json, sys
 sys.path.insert(0, r"{quant_data}")
@@ -34,13 +46,15 @@ result = Backtest(
     data_root=Path(r"{quant_data}") / "quant-store",
     start_date="{start}",
     end_date="{end}",
-    frequency="1d",
+    frequency="{frequency}",
     capital_base={capital},
     warmup_days={warmup_days},
+    warmup_bars={warmup_bars},
 ).run()
 
+date_key = "datetime" if "datetime" in result.portfolio.columns else "date"
 portfolio = [
-    {{"date": str(r["date"]), "value": float(r["portfolio_value"]), "cash": float(r["cash"])}}
+    {{"date": str(r[date_key]), "value": float(r["portfolio_value"]), "cash": float(r["cash"])}}
     for _, r in result.portfolio.iterrows()
 ]
 orders = [
@@ -78,7 +92,7 @@ print("###PARITY###" + json.dumps({{"portfolio": portfolio, "orders": orders,
 
 
 def run_go_engine(strategy: str, start: str, end: str, capital: float, warmup_days: int,
-                  lake: str, binary: str) -> dict:
+                  frequency: str, lake: str, binary: str) -> dict:
     """在 Go 引擎上运行同一策略。"""
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as fh:
         out_path = fh.name
@@ -86,8 +100,8 @@ def run_go_engine(strategy: str, start: str, end: str, capital: float, warmup_da
         proc = subprocess.run(
             [binary, "backtest", "--strategy", strategy, "--start", start.replace("-", ""),
              "--end", end.replace("-", ""), "--capital", str(capital), "--warmup", str(warmup_days),
-             "--lake", lake, "--out", out_path],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600,
+             "--frequency", frequency, "--lake", lake, "--out", out_path],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=1800,
         )
         if proc.returncode != 0:
             raise RuntimeError(f"Go 引擎运行失败:\n{proc.stdout[-2000:]}\n{proc.stderr[-2000:]}")
@@ -97,14 +111,18 @@ def run_go_engine(strategy: str, start: str, end: str, capital: float, warmup_da
             os.unlink(out_path)
     portfolio = [{"date": r["date"], "value": r["portfolio_value"], "cash": r["cash"]}
                  for r in data["portfolio"]]
-    orders = [{"dt": f"{o['created_at']} 15:00:00", "symbol": o["security"],
-               "amount": float(o["amount"]), "filled": float(o["filled"]), "status": str(o["status"]),
-               "limit": float(o["limit_price"]), "filled_price": float(o["filled_price"] or 0.0)}
-              for o in data["orders"]]
+    orders = []
+    for o in (data.get("orders") or []):
+        created = str(o["created_at"])
+        dt = created if " " in created else f"{created} 15:00:00"
+        orders.append({"dt": dt, "symbol": o["security"],
+                       "amount": float(o["amount"]), "filled": float(o["filled"]),
+                       "status": str(o["status"]),
+                       "limit": float(o["limit_price"]), "filled_price": float(o["filled_price"] or 0.0)})
     trades = [{"order_id": t["order_id"], "security": t["security"],
                "side": "买" if t["side"] == "buy" else "卖",
                "amount": float(t["amount"]), "price": float(t["price"]), "value": float(t["value"])}
-              for t in data["trades"]]
+              for t in (data.get("trades") or [])]
     logs = [{"level": l["level"], "message": l["message"]} for l in data["logs"]]
     return {"portfolio": portfolio, "orders": orders, "trades": trades, "logs": logs}
 
@@ -160,12 +178,19 @@ def main() -> int:
     parser.add_argument("--end", default="2020-01-10")
     parser.add_argument("--capital", type=float, default=1_000_000)
     parser.add_argument("--warmup-days", type=int, default=30)
+    parser.add_argument("--go-warmup", type=int, default=0,
+                        help="Go 引擎预热天数(分钟模式默认 30;0 表示与 --warmup-days 相同)")
+    parser.add_argument("--warmup-bars", type=int, default=5, help="分钟对拍的预热 Bar 数(quantbt)")
+    parser.add_argument("--frequency", default="1d", choices=["1d", "1m"])
     parser.add_argument("--quant-data", default=r"E:\AI-work\quant-data")
     parser.add_argument("--lake", default=r"D:\quant-lake")
     parser.add_argument("--binary", default=None, help="quantd 可执行文件(默认 bin/quantd.exe)")
     parser.add_argument("--show-logs", action="store_true", help="打印两侧日志")
     parser.add_argument("--check-logs", action="store_true", help="对比策略日志(message 序列必须一致)")
     parser.add_argument("--all", action="store_true", help="批量运行 parity/ 目录下的全部探针")
+    parser.add_argument("--cases", default="", help="用例集 JSON(quant-data 对齐测试的探针+参数)")
+    parser.add_argument("--quant-probes", action="store_true",
+                        help="批量运行 quant-data 的 ptrade 对齐探针(需 --frequency)")
     args = parser.parse_args()
 
     if args.all:
@@ -180,19 +205,53 @@ def main() -> int:
         print(f"批量对拍: {len(probes)} 个探针, {len(probes) - failed} 通过, {failed} 失败")
         return 1 if failed else 0
 
+    if args.quant_probes:
+        probe_dir = Path(args.quant_data) / "strategies" / "probes"
+        probes = sorted(probe_dir.glob("ptrade_alignment_*.py"))
+        failed = 0
+        for probe in probes:
+            code = run_one(str(probe), args)
+            if code != 0:
+                failed += 1
+        print()
+        print(f"批量对拍(quant 探针): {len(probes)} 个探针, {len(probes) - failed} 通过, {failed} 失败")
+        return 1 if failed else 0
+
+    if args.cases:
+        cases = json.loads(Path(args.cases).read_text(encoding="utf-8"))
+        failed = 0
+        for case in cases:
+            strategy = str(Path(args.quant_data) / "strategies" / "probes" / case["probe"])
+            code = run_one(strategy, args, case)
+            if code != 0:
+                failed += 1
+        print()
+        print(f"批量对拍(用例集): {len(cases)} 个用例, {len(cases) - failed} 通过, {failed} 失败")
+        return 1 if failed else 0
+
     return run_one(args.strategy, args)
 
 
-def run_one(strategy: str, args) -> int:
+def run_one(strategy: str, args, case: dict | None = None) -> int:
     binary = args.binary or str(Path(__file__).resolve().parents[2] / "bin" / "quantd.exe")
-    print(f"== 对拍: {strategy} ==")
+    frequency = (case or {}).get("frequency", args.frequency)
+    start = (case or {}).get("start", args.start)
+    end = (case or {}).get("end", args.end)
+    capital = (case or {}).get("capital", args.capital)
+    warmup_days = int((case or {}).get("warmup_days", args.warmup_days))
+    warmup_bars = int((case or {}).get("warmup_bars", args.warmup_bars))
+    go_warmup = args.go_warmup or (30 if frequency == "1m" else warmup_days)
+    label = (case or {}).get("test") or Path(strategy).name
+    print(f"== 对拍: {label} ({frequency}) ==")
+    print(f"   策略: {strategy}")
     print(f"   quantbt: {args.quant_data}/quant-store")
     print(f"   go    : {args.lake}")
 
-    reference = run_quantbt(strategy, args.start, args.end, args.capital,
-                            args.warmup_days, Path(args.quant_data))
-    subject = run_go_engine(strategy, args.start, args.end, args.capital,
-                            args.warmup_days, args.lake, binary)
+    reference = run_quantbt(strategy, start, end, capital,
+                            warmup_days, warmup_bars, frequency,
+                            Path(args.quant_data))
+    subject = run_go_engine(strategy, start, end, capital,
+                            go_warmup, frequency, args.lake, binary)
 
     print(f"   quantbt: 净值 {len(reference['portfolio'])} 条,委托 {len(reference['orders'])} 笔,"
           f"成交 {len(reference['trades'])} 笔")
@@ -209,8 +268,8 @@ def run_one(strategy: str, args) -> int:
 
     diffs = compare(reference, subject)
     if args.check_logs:
-        ref_logs = [(l["level"], l["message"]) for l in reference["logs"]]
-        sub_logs = [(l["level"], l["message"]) for l in subject["logs"]]
+        ref_logs = [(l["level"], normalize_log(l["message"])) for l in reference["logs"]]
+        sub_logs = [(l["level"], normalize_log(l["message"])) for l in subject["logs"]]
         if ref_logs != sub_logs:
             diffs.append(f"日志序列不同: quantbt={len(ref_logs)} 条 go={len(sub_logs)} 条")
             for i, (a, b) in enumerate(zip(ref_logs, sub_logs)):

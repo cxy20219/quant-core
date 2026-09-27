@@ -1,8 +1,10 @@
 package btengine
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
-	"sort"
+	"strconv"
 )
 
 // HandlingFeeRate 是经手费率(与 quantbt 对齐)。
@@ -28,8 +30,12 @@ type Broker struct {
 	orderIndex    map[string]*Order
 	pending       []*Order
 	trades        []*Trade
-	tradeSeq      int
+	tradeSeq      int64 // 成交序号(quantbt: 5000 起,每笔成交 +1)
+	entrustNo     int64 // 委托号(quantbt: 700000 起,每笔成交 +1)
+	orderSeq      int64 // 委托编号退化序号(随机源不可用时使用)
 	currentDay    int64
+	clockKey      int64
+	clockText     string
 	currentCloses map[string]float64
 	volumeUsed    map[string]float64
 }
@@ -37,12 +43,14 @@ type Broker struct {
 // NewBroker 创建撮合器。
 func NewBroker(p *Portfolio) *Broker {
 	return &Broker{
-		portfolio:  p,
-		commission: DefaultCommission(),
+		portfolio:   p,
+		commission:  DefaultCommission(),
 		volumeRatio: 0.25,
-		limitMode:  "LIMIT",
-		orderIndex: map[string]*Order{},
-		volumeUsed: map[string]float64{},
+		limitMode:   "LIMIT",
+		orderIndex:  map[string]*Order{},
+		volumeUsed:  map[string]float64{},
+		tradeSeq:    5000,
+		entrustNo:   700000,
 	}
 }
 
@@ -58,10 +66,33 @@ func (b *Broker) SetVolumeRatio(r float64) { b.volumeRatio = r }
 // SetLimitMode 设置限价模式。
 func (b *Broker) SetLimitMode(m string) { b.limitMode = m }
 
-// StartDay 开始新的交易日:前一日持仓全部转为可卖(T+1),清空当日成交量预算。
+// SetClock 设置当前 Bar 时钟:时间跳变时重置成交量预算(与 quantbt 的 (dt, security) 预算一致)。
+func (b *Broker) SetClock(key int64, text string) {
+	if key != b.clockKey {
+		b.volumeUsed = map[string]float64{}
+		b.clockKey = key
+	}
+	b.clockText = text
+}
+
+// ClockMicros 返回当前 Bar 的 micros 时刻。
+func (b *Broker) ClockMicros() int64 { return b.clockKey }
+
+// ClockText 返回当前 Bar 时间文本。
+func (b *Broker) ClockText() string {
+	if b.clockText == "" {
+		return dayString(b.currentDay) + " 15:00:00"
+	}
+	return b.clockText
+}
+
+// StartDay 开始新的交易日:前一日持仓全部转为可卖(T+1),清空当日成交量预算,
+// 并重置成交号/委托号(与 quantbt 的 start_trading_day 一致)。
 func (b *Broker) StartDay(day int64) {
 	b.currentDay = day
 	b.volumeUsed = map[string]float64{}
+	b.tradeSeq = 5000
+	b.entrustNo = 700000
 	for _, pos := range b.portfolio.Positions {
 		pos.EnableAmount = pos.Amount
 		pos.TodayAmount = 0
@@ -89,7 +120,7 @@ func (b *Broker) Order(sec string, amount int64, limitPrice float64, bar Bar) *O
 		OrigAmount: amount,
 		Limit:      limitPrice,
 		Status:     "2",
-		CreatedAt:  dayString(b.currentDay),
+		CreatedAt:  b.ClockText(),
 	}
 
 	// ── 挂单路径:限价且当前价不可成交 ──
@@ -156,8 +187,8 @@ func (b *Broker) Order(sec string, amount int64, limitPrice float64, bar Bar) *O
 	cashValue := -1.0
 	cashFeeValue := -1.0
 	if amount > 0 && amount < beforeVolume {
-		// 部分成交:费用按原始下单量计提,滑点差额一并冻结(与 quantbt 一致)
-		cashValue = float64(amount)*base + float64(beforeVolume-amount)*(sidePrice-base)
+		// 部分成交:费用按原始下单量计提,滑点差额按原始下单量计入现金(与 quantbt 一致)
+		cashValue = float64(amount)*base + float64(beforeVolume)*(sidePrice-base)
 		if limitPrice > 0 {
 			cashValue -= float64(beforeVolume-amount) * (limitPrice - base)
 		}
@@ -171,7 +202,7 @@ func (b *Broker) Order(sec string, amount int64, limitPrice float64, bar Bar) *O
 		order.Amount, order.OrigAmount = amount, amount
 		order.Status = "8"
 	}
-	b.applyFill(sec, amount, sidePrice, cashValue, cashFeeValue)
+	b.applyFill(sec, amount, sidePrice, cashValue, cashFeeValue, order.ID)
 	// PTrade:现金按含滑点成交价扣减,但持仓按当前 Bar 收盘价估值
 	if pos, ok := b.portfolio.Positions[sec]; ok {
 		pos.LastSalePrice = bar.Close
@@ -228,20 +259,22 @@ func (b *Broker) MatchPending(bars map[string]Bar) {
 			cashValue = float64(fillAmount) * order.Limit
 			cashFeeValue = float64(order.Amount) * order.Limit
 		}
-		b.applyFill(order.Security, fillAmount, fillPrice, cashValue, cashFeeValue)
+		b.applyFill(order.Security, fillAmount, fillPrice, cashValue, cashFeeValue, order.ID)
 		order.Filled += fillAmount
 		order.FilledPx = fillPrice
-		order.FilledAt = dayString(b.currentDay)
-		if order.Filled == order.Amount && !partial {
+		order.FilledAt = b.ClockText()
+		if order.Filled == order.Amount {
 			order.Status = "8"
 		} else {
+			// 部分成交:剩余自动撤销(quantbt 的 match_open_orders 删除挂单条目)
 			order.Status = "6"
+			if order.FrozenAmount > 0 {
+				pos := b.ensurePosition(order.Security)
+				pos.EnableAmount = pos.Amount
+				order.FrozenAmount = 0
+			}
 		}
-		if order.Filled == order.Amount {
-			// 全部成交,移出挂单
-			continue
-		}
-		remaining = append(remaining, order)
+		// 无论全部或部分成交,挂单都已终结
 	}
 	b.pending = remaining
 }
@@ -293,10 +326,7 @@ func (b *Broker) CancelledOrders() []*Order { return b.expired }
 // OpenOrders 返回未完成委托。
 func (b *Broker) OpenOrders() []*Order {
 	out := make([]*Order, 0, len(b.pending))
-	for _, o := range b.pending {
-		out = append(out, o)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	out = append(out, b.pending...)
 	return out
 }
 
@@ -304,10 +334,13 @@ func (b *Broker) OpenOrders() []*Order {
 func (b *Broker) Trades() []*Trade { return b.trades }
 
 // Cancel 撤销挂单;返回是否成功。
+//
+// 与 quantbt 的 cancel_order 一致:状态置为 "6",委托仍保留在有效列表中(可被 get_order 查到),
+// 仅从挂单列表移除并释放冻结资源。
 func (b *Broker) Cancel(orderID string) bool {
 	for i, o := range b.pending {
 		if o.ID == orderID {
-			o.Status = "9"
+			o.Status = "6"
 			if o.ReleasedCash > 0 {
 				b.portfolio.Cash += o.ReleasedCash
 				o.ReleasedCash = 0
@@ -317,14 +350,27 @@ func (b *Broker) Cancel(orderID string) bool {
 				pos.EnableAmount = min64(pos.Amount, pos.EnableAmount+o.FrozenAmount)
 				o.FrozenAmount = 0
 			}
-			b.expired = append(b.expired, o)
-			delete(b.orderIndex, o.ID)
 			b.pending = append(b.pending[:i], b.pending[i+1:]...)
 			return true
 		}
 	}
 	return false
 }
+
+// OrderOnDay 判断委托是否创建于当前交易日(quantbt 的 get_order/get_orders 只返回当日委托)。
+func (b *Broker) OrderOnDay(o *Order) bool {
+	if o == nil {
+		return false
+	}
+	day := o.CreatedAt
+	if len(day) > 10 {
+		day = day[:10]
+	}
+	return day == dayString(b.currentDay)
+}
+
+// CurrentDay 返回当前交易日。
+func (b *Broker) CurrentDay() int64 { return b.currentDay }
 
 // GetOrder 按 id 查委托。
 func (b *Broker) GetOrder(id string) *Order { return b.orderIndex[id] }
@@ -356,7 +402,7 @@ func (b *Broker) register(order *Order) {
 //
 // cashValue/cashFeeValue 为负数时按成交额自动计算;量化差异来自部分成交时
 // 按原始下单量计提费用与滑点(与 quantbt 的 _apply_fill 对齐)。
-func (b *Broker) applyFill(sec string, amount int64, price float64, cashValue, cashFeeValue float64) {
+func (b *Broker) applyFill(sec string, amount int64, price float64, cashValue, cashFeeValue float64, orderID string) {
 	if amount == 0 {
 		return
 	}
@@ -395,19 +441,29 @@ func (b *Broker) applyFill(sec string, amount int64, price float64, cashValue, c
 	}
 	pos.LastSalePrice = price
 	b.tradeSeq++
+	b.entrustNo++
 	b.trades = append(b.trades, &Trade{
-		TradeID:   fmt.Sprintf("T%06d", b.tradeSeq),
+		TradeID:   strconv.FormatInt(b.tradeSeq, 10),
+		EntrustNo: b.entrustNo,
+		OrderID:   orderID,
 		Security:  sec,
 		Side:      map[bool]string{true: "buy", false: "sell"}[amount > 0],
 		Amount:    abs64(amount),
 		Price:     price,
 		Value:     float64(abs64(amount)) * price,
-		TradeTime: dayString(b.currentDay) + " 15:00:00",
+		TradeTime: b.ClockText(),
 	})
 }
 
+// nextOrderID 生成委托编号(与 quantbt 一致:32 位十六进制随机串)。
 func (b *Broker) nextOrderID() string {
-	return fmt.Sprintf("O%06d", len(b.orders)+len(b.expired)+1)
+	var buf [16]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		// 随机源不可用时退化为序号,保证可用性
+		b.orderSeq++
+		return fmt.Sprintf("%032x", b.orderSeq)
+	}
+	return hex.EncodeToString(buf[:])
 }
 
 func (b *Broker) marketable(amount int64, limit, price float64) bool {
