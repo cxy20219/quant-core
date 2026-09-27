@@ -194,7 +194,18 @@ def get_price(security, start_date=None, end_date=None, frequency="1d", fields=N
 
 
 def get_stock_exrights(stock_code, date=None):
-    return _rpc.call("get_stock_exrights", security=stock_code, date=date)
+    """除权除息事件(与 quantbt 一致:DataFrame,index 为 YYYYMMDD 整数;无事件返回 None)。"""
+    result = _rpc.call("get_stock_exrights", security=stock_code, date=date)
+    if not result:
+        return None
+    fields = result.get("fields") or []
+    rows = result.get("rows") or []
+    dates = result.get("dates") or []
+    if pd is None:
+        return {"index": dates, "fields": fields, "rows": rows}
+    frame = pd.DataFrame([[float(value) for value in row] for row in rows], columns=fields)
+    frame.index = pd.Index(dates, name="date")
+    return frame
 
 
 def set_universe(security_list):
@@ -582,7 +593,7 @@ def main() -> int:
                 if name == "before_trading_start":
                     context["blotter"]["current_dt"] = _parse_dt(msg.get("day"))
                     context["previous_date"] = _parse_date(msg.get("previous_day"))
-                    context["portfolio"] = _record(msg.get("portfolio") or {})
+                    context["portfolio"] = _portfolio_snapshot(msg.get("portfolio"))
                     runner.before_trading_start(context)
                 elif name == "run_daily":
                     context["blotter"]["current_dt"] = _parse_dt(msg.get("day")) or context["blotter"]["current_dt"]

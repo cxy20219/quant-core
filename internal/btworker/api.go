@@ -184,7 +184,7 @@ func (w *Worker) dispatch(method string, raw json.RawMessage) (any, error) {
 		"set_fixed_slippage", "set_volume_ratio", "set_limit_mode":
 		return w.rpcSetting(method, raw)
 	case "get_stock_exrights":
-		return nil, nil // v1:公司行动数据覆盖有限,返回空
+		return w.rpcStockExrights(raw)
 	default:
 		return nil, fmt.Errorf("不支持的策略 API: %s", method)
 	}
@@ -680,6 +680,82 @@ func parseDateTimeMicros(text string) (int64, bool) {
 		}
 	}
 	return 0, false
+}
+
+// rpcStockExrights 除权除息事件(与 quantbt 的 stock_exrights 一致):
+// 指定日期时只取当日事件,无事件返回 nil(策略侧 None);字段顺序与 quantbt 的 EXRIGHT_FIELDS 一致。
+func (w *Worker) rpcStockExrights(raw json.RawMessage) (any, error) {
+	var p struct {
+		Security string          `json:"security"`
+		Date     json.RawMessage `json:"date"`
+	}
+	if raw != nil {
+		_ = json.Unmarshal(raw, &p)
+	}
+	if p.Security == "" {
+		return nil, fmt.Errorf("get_stock_exrights: security 必填")
+	}
+	dateText := rawDateString(p.Date)
+	sec := toInternalCode(p.Security)
+	portal := w.host.host.Engine.Portal
+	if err := portal.EnsureCorporateActions([]string{sec}); err != nil {
+		return nil, err
+	}
+	rows := portal.Exrights(sec)
+	if dateText != "" {
+		day, err := schema.ParseDate(dateText)
+		if err != nil {
+			return nil, fmt.Errorf("get_stock_exrights: date %q 无效", dateText)
+		}
+		filtered := make([]btengine.CorporateAction, 0, len(rows))
+		for _, row := range rows {
+			if row.ExDate == day {
+				filtered = append(filtered, row)
+			}
+		}
+		// 与 quantbt 一致:指定日期无事件返回 None;未指定日期返回空表(非 None)
+		if len(filtered) == 0 {
+			return nil, nil
+		}
+		rows = filtered
+	}
+	fields := []string{"allotted_ps", "rationed_ps", "rationed_px", "bonus_ps",
+		"exer_forward_a", "exer_forward_b", "exer_backward_a", "exer_backward_b"}
+	dates := make([]int, 0, len(rows))
+	out := make([][]any, 0, len(rows))
+	for _, row := range rows {
+		dates = append(dates, dateIntFromDays(row.ExDate))
+		out = append(out, []any{
+			row.AllottedPs, row.RationedPs, row.RationedPx, row.BonusPs,
+			row.ExerForwardA, row.ExerForwardB, row.ExerBackwardA, row.ExerBackwardB,
+		})
+	}
+	return map[string]any{"dates": dates, "fields": fields, "rows": out}, nil
+}
+
+// rawDateString 把 JSON 原始值(字符串或数字)转为日期文本。
+func rawDateString(raw json.RawMessage) string {
+	text := strings.TrimSpace(string(raw))
+	if text == "" || text == "null" {
+		return ""
+	}
+	if strings.HasPrefix(text, "\"") {
+		var s string
+		if json.Unmarshal(raw, &s) == nil {
+			return s
+		}
+		return ""
+	}
+	if f, err := strconv.ParseFloat(text, 64); err == nil {
+		return strconv.FormatInt(int64(f), 10)
+	}
+	return ""
+}
+
+// dateIntFromDays 把 epoch 天数转为 YYYYMMDD 整数(与 quantbt 的 index 一致)。
+func dateIntFromDays(days int64) int {
+	t := schema.TimeFromDays(days).UTC()
+	return t.Year()*10000 + int(t.Month())*100 + t.Day()
 }
 
 // nanToNil 把 NaN 转为 nil(Go JSON 不能编码 NaN;策略侧还原为 NaN)。

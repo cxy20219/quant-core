@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"strconv"
 )
 
@@ -38,6 +39,7 @@ type Broker struct {
 	clockText     string
 	currentCloses map[string]float64
 	volumeUsed    map[string]float64
+	capitalBase   float64
 }
 
 // NewBroker 创建撮合器。
@@ -207,9 +209,27 @@ func (b *Broker) Order(sec string, amount int64, limitPrice float64, bar Bar) *O
 	if pos, ok := b.portfolio.Positions[sec]; ok {
 		pos.LastSalePrice = bar.Close
 	}
+	// 与 quantbt 的 order() 一致:即时成交后立即刷新账户估值
+	b.RefreshPortfolioValue()
 	b.register(order)
 	return order
 }
+
+// RefreshPortfolioValue 重算持仓市值与账户总值(与 quantbt 的 _refresh_portfolio_value 一致)。
+func (b *Broker) RefreshPortfolioValue() {
+	positionsValue := 0.0
+	for _, pos := range b.portfolio.Positions {
+		positionsValue += float64(pos.Amount) * pos.LastSalePrice
+	}
+	b.portfolio.PositionsValue = positionsValue
+	b.portfolio.PortfolioValue = b.portfolio.Cash + positionsValue
+	if b.capitalBase > 0 {
+		b.portfolio.Returns = b.portfolio.PortfolioValue/b.capitalBase - 1
+	}
+}
+
+// SetCapitalBase 设置初始资金(用于计算收益率)。
+func (b *Broker) SetCapitalBase(base float64) { b.capitalBase = base }
 
 // capBuyAmount 按可用现金(含费用)把买入数量向下取整到可负担的手数。
 func (b *Broker) capBuyAmount(sec string, amount int64, price float64) int64 {
@@ -357,6 +377,55 @@ func (b *Broker) Cancel(orderID string) bool {
 	return false
 }
 
+// ApplyCorporateActions 执行当日除权除息(与 quantbt 的 apply_corporate_actions 一致)。
+//
+// 处理顺序:先配股(rationed_ps>0)后送转/分红,组内按代码升序。
+// 入账规则:
+//   - 送转股 = int(持仓 × allotted_ps),配股 = int(持仓 × rationed_ps);
+//   - 分红现金 = 持仓 × bonus_ps × 0.8(代扣 20% 红利税);
+//   - 配股需现金 = 配股数 × 配股价;现金不足时:若既无送转也无分红则跳过,否则报错;
+//   - 现金 += 分红现金 − 配股款;持仓 += 送转 + 配股;成本价 = (原成本 − 分红现金 + 配股款) / 新持仓。
+func (b *Broker) ApplyCorporateActions(actions []CorporateAction) error {
+	rows := make([]CorporateAction, len(actions))
+	copy(rows, actions)
+	sort.SliceStable(rows, func(i, j int) bool {
+		left := rows[i].RationedPs > 0
+		right := rows[j].RationedPs > 0
+		if left != right {
+			return left
+		}
+		return rows[i].Security < rows[j].Security
+	})
+	for _, action := range rows {
+		pos := b.portfolio.Positions[action.Security]
+		if pos == nil || pos.Amount <= 0 {
+			continue
+		}
+		oldAmount := pos.Amount
+		allotted := int64(float64(oldAmount) * action.AllottedPs)
+		rationed := int64(float64(oldAmount) * action.RationedPs)
+		dividendCash := float64(oldAmount) * action.BonusPs * 0.8
+		rightsCash := float64(rationed) * action.RationedPx
+		if rightsCash > b.portfolio.Cash+1e-8 {
+			if allotted == 0 && action.BonusPs == 0 {
+				continue
+			}
+			return fmt.Errorf("公司行动现金不足且含送转/分红(未验证组合):%s %s", action.Security, dayString(action.ExDate))
+		}
+		newAmount := oldAmount + allotted + rationed
+		newCost := pos.CostBasis*float64(oldAmount) - dividendCash + rightsCash
+		b.portfolio.Cash += dividendCash - rightsCash
+		pos.Amount = newAmount
+		pos.EnableAmount += allotted + rationed
+		if newAmount > 0 {
+			pos.CostBasis = newCost / float64(newAmount)
+		} else {
+			pos.CostBasis = 0
+		}
+	}
+	return nil
+}
+
 // OrderOnDay 判断委托是否创建于当前交易日(quantbt 的 get_order/get_orders 只返回当日委托)。
 func (b *Broker) OrderOnDay(o *Order) bool {
 	if o == nil {
@@ -375,12 +444,10 @@ func (b *Broker) CurrentDay() int64 { return b.currentDay }
 // GetOrder 按 id 查委托。
 func (b *Broker) GetOrder(id string) *Order { return b.orderIndex[id] }
 
-// GetPosition 查持仓(只读;不存在时返回空持仓,不写入账户)。
+// GetPosition 查持仓;不存在时创建并登记到账户(与 quantbt 的 setdefault 一致,
+// 使空持仓也能被 mark_to_market 更新 last_sale_price)。
 func (b *Broker) GetPosition(sec string) *Position {
-	if pos, ok := b.portfolio.Positions[sec]; ok {
-		return pos
-	}
-	return &Position{Security: sec}
+	return b.ensurePosition(sec)
 }
 
 // ensurePosition 取持仓,不存在则创建并登记到账户。

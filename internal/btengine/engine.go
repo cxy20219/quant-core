@@ -108,6 +108,7 @@ func (e *Engine) Run(runner StrategyRunner) (*Result, error) {
 	}
 	e.Portfolio.PortfolioValue = e.Portfolio.Cash
 	e.Broker = NewBroker(e.Portfolio)
+	e.Broker.SetCapitalBase(e.Config.CapitalBase)
 
 	host := &Host{
 		Engine:    e,
@@ -156,6 +157,12 @@ func (e *Engine) runDaily(host *Host) error {
 		if len(host.Universe) > 0 {
 			if err := e.Portal.EnsureDaily(host.Universe); err != nil {
 				return err
+			}
+			if err := e.Portal.EnsureCorporateActions(host.Universe); err != nil {
+				return err
+			}
+			if err := e.Broker.ApplyCorporateActions(e.Portal.CorporateActionsOn(day)); err != nil {
+				return fmt.Errorf("%s 公司行动: %w", dayString(day), err)
 			}
 		}
 		if err := e.runner.BeforeTradingStart(); err != nil {
@@ -528,6 +535,12 @@ func (e *Engine) runMinute(host *Host) error {
 			if len(host.Universe) > 0 {
 				if err := e.Portal.EnsureDaily(host.Universe); err != nil {
 					return err
+				}
+				if err := e.Portal.EnsureCorporateActions(host.Universe); err != nil {
+					return err
+				}
+				if err := e.Broker.ApplyCorporateActions(e.Portal.CorporateActionsOn(day)); err != nil {
+					return fmt.Errorf("%s 公司行动: %w", dayString(day), err)
 				}
 			}
 			if err := e.runner.BeforeTradingStart(); err != nil {

@@ -26,8 +26,25 @@ type DataPortal struct {
 
 	dailyBySec map[string]*secDaily
 	adjBySec   map[string]map[int64]float64
+	// 公司行动:按日索引 + 按证券索引(quantbt 的 corporate_actions / get_stock_exrights)
+	actionsByDay map[int64][]CorporateAction
+	actionsBySec map[string][]CorporateAction
 
 	mu sync.Mutex
+}
+
+// CorporateAction 是一条除权除息事件(字段与注册表 corporate_actions 一致)。
+type CorporateAction struct {
+	Security      string
+	ExDate        int64
+	AllottedPs    float64 // 每股送转
+	RationedPs    float64 // 每股配股
+	RationedPx    float64 // 配股价
+	BonusPs       float64 // 每股分红(税前)
+	ExerForwardA  float64
+	ExerForwardB  float64
+	ExerBackwardA float64
+	ExerBackwardB float64
 }
 
 type secDaily struct {
@@ -44,14 +61,16 @@ type secDaily struct {
 // NewDataPortal 创建数据门户。
 func NewDataPortal(l *lake.Lake, start, end int64, warmupDays int64) *DataPortal {
 	return &DataPortal{
-		lake:       l,
-		scanner:    query.NewCachedScanner(l, 1024),
-		start:      start,
-		end:        end,
-		warmup:     warmupDays,
-		dayIndex:   map[int64]int{},
-		dailyBySec: map[string]*secDaily{},
-		adjBySec:   map[string]map[int64]float64{},
+		lake:         l,
+		scanner:      query.NewCachedScanner(l, 1024),
+		start:        start,
+		end:          end,
+		warmup:       warmupDays,
+		dayIndex:     map[int64]int{},
+		dailyBySec:   map[string]*secDaily{},
+		adjBySec:     map[string]map[int64]float64{},
+		actionsByDay: map[int64][]CorporateAction{},
+		actionsBySec: map[string][]CorporateAction{},
 	}
 }
 
@@ -157,6 +176,90 @@ func (p *DataPortal) loadDaily(securities []string) error {
 		sd.amt = append(sd.amt, num(row[7])*1000)
 	}
 	return cur.Err()
+}
+
+// EnsureCorporateActions 加载股票池在回测区间内的公司行动(数据量小,一次性加载)。
+func (p *DataPortal) EnsureCorporateActions(securities []string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(securities) == 0 {
+		return nil
+	}
+	missing := make([]string, 0, len(securities))
+	for _, sec := range securities {
+		if _, ok := p.actionsBySec[sec]; !ok {
+			missing = append(missing, sec)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	ds, err := p.lake.Registry.Get("corporate_actions")
+	if err != nil {
+		return err
+	}
+	codeIdx, _ := ds.FieldIndex("ts_code")
+	// 与 quantbt 一致:按证券加载全部历史事件(数据量小;get_stock_exrights 需全量)
+	cur, err := p.scanner.Open(query.Request{
+		Dataset: "corporate_actions",
+		Columns: []string{"ts_code", "ex_date", "allotted_ps", "rationed_ps", "rationed_px", "bonus_ps",
+			"exer_forward_a", "exer_forward_b", "exer_backward_a", "exer_backward_b"},
+		Filter: &query.Filter{Preds: []query.Predicate{
+			query.In(codeIdx, toValues(missing)...),
+		}},
+	})
+	if err != nil {
+		return err
+	}
+	defer cur.Close()
+	for cur.Next() {
+		row := cur.Row()
+		action := CorporateAction{
+			Security:      row[0].S,
+			ExDate:        row[1].I,
+			AllottedPs:    num(row[2]),
+			RationedPs:    num(row[3]),
+			RationedPx:    num(row[4]),
+			BonusPs:       num(row[5]),
+			ExerForwardA:  num(row[6]),
+			ExerForwardB:  num(row[7]),
+			ExerBackwardA: num(row[8]),
+			ExerBackwardB: num(row[9]),
+		}
+		p.actionsByDay[action.ExDate] = append(p.actionsByDay[action.ExDate], action)
+		p.actionsBySec[action.Security] = append(p.actionsBySec[action.Security], action)
+	}
+	if err := cur.Err(); err != nil {
+		return err
+	}
+	// 标记已加载(即使无数据),避免重复查询
+	for _, sec := range missing {
+		if _, ok := p.actionsBySec[sec]; !ok {
+			p.actionsBySec[sec] = nil
+		}
+	}
+	return nil
+}
+
+// CorporateActionsOn 返回指定交易日的公司行动(按代码升序)。
+func (p *DataPortal) CorporateActionsOn(day int64) []CorporateAction {
+	rows := p.actionsByDay[day]
+	if len(rows) == 0 {
+		return nil
+	}
+	out := make([]CorporateAction, len(rows))
+	copy(out, rows)
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Security < out[j].Security })
+	return out
+}
+
+// Exrights 返回证券的全部除权除息事件(按日期升序),供 get_stock_exrights 使用。
+func (p *DataPortal) Exrights(sec string) []CorporateAction {
+	rows := p.actionsBySec[sec]
+	out := make([]CorporateAction, len(rows))
+	copy(out, rows)
+	sort.SliceStable(out, func(i, j int) bool { return out[i].ExDate < out[j].ExDate })
+	return out
 }
 
 func toValues(codes []string) []schema.Value {

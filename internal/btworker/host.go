@@ -118,21 +118,16 @@ func (v *hostView) portfolioJSON() map[string]any {
 	v.sync()
 	pf := v.host.Portfolio
 	positions := map[string]any{}
-	positionsValue := 0.0
 	for sec, pos := range pf.Positions {
-		positionsValue += float64(pos.Amount) * pos.LastSalePrice
-		positions[sec] = positionJSONWith(pos, v.display)
+		positions[v.display(sec)] = positionJSONWith(pos, v.display)
 	}
-	portfolioValue := pf.Cash + positionsValue
-	returns := 0.0
-	if base := v.host.Config.CapitalBase; base > 0 {
-		returns = portfolioValue/base - 1
-	}
+	// 与 quantbt 一致:portfolio_value 只在 mark_to_market / 即时成交后刷新,
+	// 这里返回已存储的值(不在快照时重算)。
 	return map[string]any{
 		"cash":            pf.Cash,
-		"positions_value": positionsValue,
-		"portfolio_value": portfolioValue,
-		"returns":         returns,
+		"positions_value": pf.PositionsValue,
+		"portfolio_value": pf.PortfolioValue,
+		"returns":         pf.Returns,
 		"positions":       positions,
 	}
 }

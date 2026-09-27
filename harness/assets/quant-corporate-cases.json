@@ -1,0 +1,122 @@
+[
+ {
+  "test": "test_corporate_actions_dividend_and_allotment",
+  "probe": "ptrade_alignment_corporate_actions.py",
+  "start": "2020-05-25",
+  "end": "2020-06-05",
+  "frequency": "1m",
+  "capital": 1000000.0,
+  "warmup_bars": 5,
+  "warmup_days": 800
+ },
+ {
+  "test": "test_daily_lifecycle_with_corporate_action",
+  "probe": "ptrade_alignment_daily_lifecycle_corporate.py",
+  "start": "2020-05-25",
+  "end": "2020-06-02",
+  "frequency": "1m",
+  "capital": 1000000.0,
+  "warmup_bars": 5,
+  "warmup_days": 800
+ },
+ {
+  "test": "test_dividend_tax_withholding",
+  "probe": "ptrade_alignment_dividend_tax.py",
+  "start": "2020-04-23",
+  "end": "2020-05-29",
+  "frequency": "1m",
+  "capital": 1000000.0,
+  "warmup_bars": 5,
+  "warmup_days": 800
+ },
+ {
+  "test": "test_dividend_tax_boundary_dates",
+  "probe": "ptrade_alignment_dividend_tax_boundary.py",
+  "start": "2020-04-22",
+  "end": "2020-06-01",
+  "frequency": "1m",
+  "capital": 1000000.0,
+  "warmup_bars": 5,
+  "warmup_days": 800
+ },
+ {
+  "test": "test_dividend_tax_one_year_holding",
+  "probe": "ptrade_alignment_dividend_tax_one_year.py",
+  "start": "2019-05-20",
+  "end": "2020-06-01",
+  "frequency": "1m",
+  "capital": 1000000.0,
+  "warmup_bars": 5,
+  "warmup_days": 800
+ },
+ {
+  "test": "test_dividend_tax_settlement",
+  "probe": "ptrade_alignment_dividend_tax_settlement.py",
+  "start": "2020-04-22",
+  "end": "2020-06-03",
+  "frequency": "1m",
+  "capital": 1000000.0,
+  "warmup_bars": 5,
+  "warmup_days": 800
+ },
+ {
+  "test": "test_fractional_allotment_rounding",
+  "probe": "ptrade_alignment_fractional_allotment.py",
+  "start": "2019-04-12",
+  "end": "2019-04-19",
+  "frequency": "1m",
+  "capital": 1000000.0,
+  "warmup_bars": 5,
+  "warmup_days": 800
+ },
+ {
+  "test": "test_cross_corporate_action_cash",
+  "probe": "ptrade_alignment_cross_corporate_action_cash.py",
+  "start": "2023-06-21",
+  "end": "2023-06-29",
+  "frequency": "1m",
+  "capital": 1000000.0,
+  "warmup_bars": 5,
+  "warmup_days": 800
+ },
+ {
+  "test": "test_multiple_rights_cash",
+  "probe": "ptrade_alignment_multiple_rights_cash.py",
+  "start": "2010-08-26",
+  "end": "2010-09-02",
+  "frequency": "1m",
+  "capital": 1000000.0,
+  "warmup_bars": 5,
+  "warmup_days": 800
+ },
+ {
+  "test": "test_rights_issue",
+  "probe": "ptrade_alignment_rights_issue.py",
+  "start": "2022-01-12",
+  "end": "2022-02-17",
+  "frequency": "1m",
+  "capital": 1000000.0,
+  "warmup_bars": 5,
+  "warmup_days": 800
+ },
+ {
+  "test": "test_rights_insufficient_cash",
+  "probe": "ptrade_alignment_rights_insufficient_cash.py",
+  "start": "2022-01-12",
+  "end": "2022-01-31",
+  "frequency": "1m",
+  "capital": 1000000.0,
+  "warmup_bars": 5,
+  "warmup_days": 800
+ },
+ {
+  "test": "test_corporate_action_candidates_scan",
+  "probe": "ptrade_alignment_corporate_action_candidates.py",
+  "start": "2020-05-25",
+  "end": "2020-06-08",
+  "frequency": "1m",
+  "capital": 1000000.0,
+  "warmup_bars": 5,
+  "warmup_days": 800
+ }
+]
