@@ -49,6 +49,8 @@
 - 数据源管理:`go run ./cmd/quantd source list|check|call|compare`
 - 本地回测:`go run ./cmd/quantd backtest --strategy examples/strategies/dual_ma.py --start 20240101 --end 20241231 --lake D:\quant-lake --params '{...}'`
 - 分钟回测:加 `--frequency 1m --warmup 30`(`--warmup` 为预热交易日数)
+- 大股票池分钟回测:窗口按 `--minute-max-rows`(默认 300 万 Bar)自动收缩;
+  容器默认 `GOGC=50`(内存约减半);压测用 `python harness/scripts/bench_backtest.py`
 - 双引擎对拍:`python harness/scripts/parity_check.py --all --check-logs`(日线)
 - 分钟对拍:`python harness/scripts/parity_check.py --cases harness/assets/quant-minute-cases.json --check-logs`
 - 公司行动对拍:`python harness/scripts/parity_check.py --cases harness/assets/quant-corporate-cases.json --check-logs`
