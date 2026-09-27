@@ -15,6 +15,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+
+	"quant-core/internal/factor"
 )
 
 // Config 是 worker 配置。
@@ -39,6 +41,8 @@ type Worker struct {
 	phase string
 	// stockBasic 是 stock_basic 快照缓存(get_Ashares / get_stock_name 用)
 	stockBasic map[string]stockInfo
+	// factors 是因子注册表缓存(get_factor 用)
+	factors *factor.Registry
 }
 
 // New 创建 worker(不启动进程)。

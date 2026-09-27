@@ -92,6 +92,24 @@ POST 策略+参数 → 作业队列 → { Go 引擎 ⇄ Python 策略子进程 }
   由接口表(`internal/tsapi/apis.go`)与数据集注册表(`schemas/datasets.yaml`)自动生成;
 - `GET /docs/openapi.json` 为 OpenAPI 3.0 规范(导入 Postman/Swagger UI 即可调用)。
 
+## 策略编写要点(踩坑)
+
+- **调仓换池时,股票池必须包含待卖出的持仓**:PTrade 只能交易 `set_universe` 内的标的,
+  只把"新目标"放进池子会导致 `order_target(code, 0)` 因无当前行情被拒,旧持仓持续堆积、
+  且每日重试卖出会显著变慢。惯用写法:
+
+  ```python
+  targets = [...]
+  holdings = [code for code, pos in context.portfolio.positions.items() if pos.amount > 0]
+  set_universe(list(set(targets) | set(holdings)))
+  g.rebalance_today = True   # 只在调仓日交易,避免每日重复下单
+  ```
+
+- **股票池变动会加载新标的的日线/复权历史**(每次约 0.3~1s,取决于新增数量与区间):
+  高频换池(如每日全市场轮换)成本较高;固定大池或月度换池更划算。
+- 示例:`examples/strategies/smallcap_rotation.py`(市值筛选)、
+  `examples/strategies/factor_rotation.py`(因子选股)。
+
 ## 策略接口(PTrade 子集)
 
 - 生命周期:`initialize(context)` / `before_trading_start(context, data)` /

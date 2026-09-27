@@ -279,6 +279,18 @@ def get_Ashares(date=None):
     return _rpc.call("get_Ashares", date=date)
 
 
+def get_factor(factor_id, date=None):
+    """因子截面值(超集接口):返回 {代码: 因子值};因子需先在 /panel 或 POST /api/factors 注册。
+
+    date 缺省用当前回测日;典型用法(盘前选股):
+        scores = get_factor("reversal_5")
+        top = sorted(scores.items(), key=lambda kv: -kv[1])[:30]
+        set_universe([code for code, _ in top])
+    """
+    result = _rpc.call("get_factor", factor_id=str(factor_id), date=date)
+    return dict((result or {}).get("values") or {})
+
+
 def get_stock_name(stock_code):
     """证券名称(来自 stock_basic 快照);未找到返回空串。"""
     return _rpc.call("get_stock_name", security=stock_code)
@@ -621,6 +633,7 @@ class Runner:
             "get_stock_exrights": get_stock_exrights,
             "get_fundamentals": get_fundamentals,
             "get_Ashares": get_Ashares, "get_stock_name": get_stock_name,
+            "get_factor": get_factor,
             "set_universe": set_universe, "set_benchmark": set_benchmark,
             "set_commission": set_commission, "set_slippage": set_slippage,
             "set_fixed_slippage": set_fixed_slippage,

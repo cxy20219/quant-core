@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"quant-core/internal/btengine"
+	"quant-core/internal/factor"
+	"quant-core/internal/lake"
 	"quant-core/internal/schema"
 )
 
@@ -203,6 +205,8 @@ func (w *Worker) dispatch(method string, raw json.RawMessage) (any, error) {
 		return w.rpcAshares(raw)
 	case "get_stock_name":
 		return w.rpcStockName(raw)
+	case "get_factor":
+		return w.rpcFactor(raw)
 	default:
 		return nil, fmt.Errorf("不支持的策略 API: %s", method)
 	}
@@ -913,6 +917,67 @@ func (w *Worker) rpcStockName(raw json.RawMessage) (any, error) {
 		return info.Name, nil
 	}
 	return "", nil
+}
+
+// rpcFactor 返回某因子在某交易日的截面值(策略选股用;超集:quantbt 无此接口)。
+//
+// 参数:factor_id(必填)、date(可选,缺省用当前回测日);返回 {显示代码: 因子值}。
+func (w *Worker) rpcFactor(raw json.RawMessage) (any, error) {
+	var p struct {
+		FactorID string          `json:"factor_id"`
+		Date     json.RawMessage `json:"date"`
+	}
+	if raw != nil {
+		_ = json.Unmarshal(raw, &p)
+	}
+	if p.FactorID == "" {
+		return nil, fmt.Errorf("get_factor: factor_id 必填")
+	}
+	l := w.host.host.Engine.Lake
+	reg, err := w.loadFactors(l)
+	if err != nil {
+		return nil, err
+	}
+	def, ok := reg.Get(p.FactorID)
+	if !ok {
+		return nil, fmt.Errorf("get_factor: 因子 %q 未注册(可在 /panel 因子页或 POST /api/factors 注册)", p.FactorID)
+	}
+	day := w.host.currentDay
+	if text := rawDateString(p.Date); text != "" {
+		parsed, err := schema.ParseDate(text)
+		if err != nil {
+			return nil, fmt.Errorf("get_factor: date %q 无效", text)
+		}
+		day = parsed
+	}
+	values, err := factor.DailyValues(l, def, day)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]float64, len(values))
+	for code, value := range values {
+		out[w.host.display(code)] = value
+	}
+	return map[string]any{
+		"factor": def.ID,
+		"name":   def.Name,
+		"date":   schema.FormatDateISO(day),
+		"values": out,
+		"count":  len(out),
+	}, nil
+}
+
+// loadFactors 加载湖内因子注册表(进程内缓存,注册变更需重启服务或重新加载)。
+func (w *Worker) loadFactors(l *lake.Lake) (*factor.Registry, error) {
+	if w.factors != nil {
+		return w.factors, nil
+	}
+	reg, err := factor.LoadFor(l)
+	if err != nil {
+		return nil, err
+	}
+	w.factors = reg
+	return reg, nil
 }
 
 // nanToNil 把 NaN 转为 nil(Go JSON 不能编码 NaN;策略侧还原为 NaN)。

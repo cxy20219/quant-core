@@ -45,6 +45,20 @@
 
 5. **删除因子**:`DELETE /api/factors/{id}`。
 
+6. **策略里直接用因子**(回测超集接口,quantbt 无此接口):
+
+   ```python
+   def before_trading_start(context, data):
+       scores = get_factor("reversal_5")          # {代码: 因子值},全市场一次
+       top = sorted(scores.items(), key=lambda kv: -kv[1])[:30]
+       holdings = [c for c, p in context.portfolio.positions.items() if p.amount > 0]
+       set_universe(list({c for c, _ in top} | set(holdings)))   # 卖出也要在池内
+       g.targets = [c for c, _ in top]
+   ```
+
+   实现:`internal/factor/values.go`(单日截面值 + (因子,日) 缓存);
+   单次全市场约 0.15s(缓存命中 0.007s)。示例策略:`examples/strategies/factor_rotation.py`。
+
 验证:跟踪返回 `stats.samples` 与区间交易日数一致;`coverage` 覆盖率接近 100%(除停牌/未上市);
 分层累计曲线单调性与 `direction` 的预期一致(如 `size_log` 在 2023-2024 小市值占优期
 应呈“层1(小市值)在上”)。
