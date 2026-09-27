@@ -47,6 +47,9 @@ go test ./internal/... -timeout 300s
 $env:TUSHARE_TOKEN="xxxx"
 .\bin\quantd.exe import --source tushare --dataset stk_limit --start 20240101 --end 20240131 --lake D:\quant-lake
 
+# 物化日频横截面(全市场单日筛选提速;数据更新后执行)
+.\bin\quantd.exe build-cross --lake D:\quant-lake
+
 # 行数核对(manifest vs parquet metadata)
 .\bin\quantd.exe verify --lake D:\quant-lake
 

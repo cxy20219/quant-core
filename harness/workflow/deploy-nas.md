@@ -64,6 +64,12 @@ python -c "import sys; sys.path.insert(0, 'harness/scripts'); from _nasenv impor
    python harness/scripts/upload_lake.py "D:\quant-lake\canonical" "/vol1/quant-core/data/lake/canonical"
    ```
 
+4.5 **物化日频横截面**(数据更新后执行一次,供全市场单日筛选/估值查询提速):
+
+   ```bash
+   python harness/scripts/remote_exec.py "/vol1/quant-core/src/bin/quantd-linux-amd64 build-cross --lake /vol1/quant-core/data/lake --registry /vol1/quant-core/etc/datasets.yaml"
+   ```
+
 5. **启动/重启容器并核对**:
 
    ```bash
