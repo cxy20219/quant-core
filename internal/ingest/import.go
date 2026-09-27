@@ -558,7 +558,7 @@ func (t *Importer) importMonthRange(ctx context.Context, ds *schema.Dataset, spe
 					}
 					if err := t.Logger.Append(lake.Batch{
 						ID: batchID(ds.Name, sliceIdx), Dataset: ds.Name, Operation: "import",
-						Source: t.Source.Name() + ":" + spec.APIName + ":" + windowStart.Format("20060102"),
+						Source:    t.Source.Name() + ":" + spec.APIName + ":" + windowStart.Format("20060102"),
 						CreatedAt: nowUTC(), Rows: int64(len(rows)),
 						Partitions: []string{"year=" + year}, Files: files,
 					}); err != nil {
@@ -574,6 +574,9 @@ func (t *Importer) importMonthRange(ctx context.Context, ds *schema.Dataset, spe
 }
 
 // writeRows 把一次结果整体写入某个分区。
+//
+// 与快照导入一致,按主键去重:中转站对同一查询可能返回重复行
+// (如 relay-b 的 stk_limit 单日常见重复),不去重会把重复数据写进湖里。
 func (t *Importer) writeRows(ds *schema.Dataset, spec *Spec, result *source.Result, partValues map[string]string, label string) (int64, error) {
 	rel, err := lake.PartitionPath(ds, partValues)
 	if err != nil {
@@ -587,18 +590,31 @@ func (t *Importer) writeRows(ds *schema.Dataset, spec *Spec, result *source.Resu
 	if err != nil {
 		return 0, err
 	}
-	var wrote int64
+	keyIdx := ds.PrimaryKeyIndexes()
+	seen := map[string]bool{}
+	var wrote, dupRemoved int64
 	for _, item := range result.Items {
 		row, err := t.rowFromItem(ds, result.Fields, item)
 		if err != nil {
 			_, _ = pw.Close()
 			return wrote, err
 		}
+		if len(keyIdx) > 0 {
+			key := schema.PrimaryKeyString(row, keyIdx)
+			if seen[key] {
+				dupRemoved++
+				continue
+			}
+			seen[key] = true
+		}
 		if err := pw.WriteRow(row); err != nil {
 			_, _ = pw.Close()
 			return wrote, err
 		}
 		wrote++
+	}
+	if dupRemoved > 0 {
+		t.logf("dataset %s window %s: 主键去重移除 %d 行", ds.Name, label, dupRemoved)
 	}
 	files, err := pw.Close()
 	if err != nil {
@@ -617,7 +633,7 @@ func (t *Importer) writeRows(ds *schema.Dataset, spec *Spec, result *source.Resu
 		sort.Strings(partitions)
 		if err := t.Logger.Append(lake.Batch{
 			ID: batchID(ds.Name, 0), Dataset: ds.Name, Operation: "import",
-			Source: t.Source.Name() + ":" + spec.APIName + ":" + label,
+			Source:    t.Source.Name() + ":" + spec.APIName + ":" + label,
 			CreatedAt: nowUTC(), Rows: wrote, Partitions: partitions, Files: files,
 		}); err != nil {
 			return wrote, err

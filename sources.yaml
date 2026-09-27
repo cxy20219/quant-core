@@ -64,7 +64,9 @@ bindings:
   stock_basic: [relay-b, relay-a]
   trade_cal: [relay-b, relay-a]
   index_basic: [relay-b, relay-a]
-  stk_limit: [relay-b, relay-a]
+  # stk_limit 只绑 B 站:relay-a 对单日全市场会截断到 5000 行且不含基金/ETF,
+  # 作为降级源会写入不完整数据(2026-09-27 实测:同一天 B=6969 行、A=5000 行截断)
+  stk_limit: [relay-b]
   suspend_d: [relay-b, relay-a]
   namechange: [relay-b, relay-a]
   index_daily: [relay-b, relay-a]

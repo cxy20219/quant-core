@@ -405,6 +405,7 @@ func cmdImport(args []string) {
 		Lake:   l,
 		Logger: lake.NewBatchLogger(*lakeDir),
 		Logf:   log.Printf,
+		Resume: true, // 重跑跳过 manifest 中已完成的窗口(避免重复导入)
 	}
 	log.Printf("importing %s from source %s (kind=%s) ...", *dataset, active.Name(), active.Kind())
 	started := time.Now()

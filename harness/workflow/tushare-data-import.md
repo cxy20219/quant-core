@@ -112,7 +112,21 @@ bindings:
 | stk_limit | date-range | 逐日 | 单日全市场 ~5500 行 |
 | bars_daily/bars_1m/adj_factor/corporate_actions | 迁移/离线 | — | 来自旧湖迁移 |
 
+## 已知坑与修复(2026-09-27)
+
+- **日期区间导入此前未去重**:`writeRows`(逐日区间路径)不像快照路径那样按主键去重,
+  而中转站会对同一查询返回重复行(relay-b 的 stk_limit 单日常见 ~1,500 行重复),
+  造成湖内重复数据。已修复:区间路径同样按主键去重并打印 `主键去重移除 N 行`。
+- **CLI 导入此前未启用 Resume**:`cmdImport` 未设置 `Resume: true`,重跑会重复导入
+  已完成窗口(配合上一条会产生成倍重复)。已修复。
+- **`stk_limit` 不能绑 relay-a 作降级**:A 站对单日全市场返回恰好 5000 行(硬上限截断)
+  且不含基金/ETF(同一天 B=6969 行、A=5000 行);导入器的截断检测会拒绝该窗口。
+  因此 `sources.yaml` 中 `stk_limit` 只绑 `relay-b`。
+- 排查手法:`source compare --dataset <x> --param ...` 比两源行数;
+  拉一天数据到临时湖(`import --source <s> --lake <tmp>`)后用 duckdb 比对代码集合,
+  可直接看出缺的是哪类代码(如基金 159xxx/5xxxxx)。
+
 ## 最近验证
 
 2026-09-27:导入 trade_cal(27,283)、stock_basic(5,871)、index_basic(10,777)、suspend_d(9,459)、namechange(1,212)、index_daily(25,301)全部通过 `verify`;
-stk_limit 因 B 站上游池降级只完成部分(276,615 行,~50 个交易日),待续传补全。
+stk_limit 已修复导入去重与源绑定,并在 NAS 上清理重复后全量重导(B 站,含基金/ETF 的完整口径)。
