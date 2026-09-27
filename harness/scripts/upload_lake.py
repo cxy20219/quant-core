@@ -4,7 +4,7 @@
     python harness/scripts/upload_lake.py <local_root> <remote_root> [--workers 6] [--check]
 
 环境变量(均有默认值):
-    QUANT_NAS_HOST  默认 <nas-host>
+    QUANT_NAS_HOST  NAS 地址(必填,或写入 .env)
     QUANT_NAS_USER  默认 <nas-user>
     QUANT_NAS_KEY   默认 ~/.ssh/id_rsa
 """
@@ -23,7 +23,10 @@ warnings.filterwarnings("ignore")
 
 import paramiko
 
-HOST = os.environ.get("QUANT_NAS_HOST", "<nas-host>")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _nasenv import nas_host  # noqa: E402
+
+HOST = nas_host()
 USER = os.environ.get("QUANT_NAS_USER", "<nas-user>")
 KEY = os.environ.get("QUANT_NAS_KEY", os.path.expanduser("~/.ssh/id_rsa"))
 

@@ -7,6 +7,7 @@
 
 ## 前置条件
 
+- 先在项目根 `.env` 配置 `QUANT_NAS_HOST` / `QUANT_NAS_USER`(不入库),脚本会自动读取;
 - 本机可无密码登录 NAS:`ssh <nas-user>@<nas-host>`(密钥已配置;若 host key 变更需先 `ssh-keygen -R <nas-host>`)。
 - NAS 上 Docker 可用且已配置可达镜像源,见 `harness/references/nas-server.md`。
 - 数据湖已迁移并完成对账(见 `harness/workflow/data-lake-migration.md`)。

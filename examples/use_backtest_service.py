@@ -12,7 +12,7 @@ import sys
 import time
 import urllib.request
 
-BASE = sys.argv[1] if len(sys.argv) > 1 else "http://<nas-host>:8000"
+BASE = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("QUANT_NAS_URL", "http://127.0.0.1:8000")
 
 # PTrade 兼容策略:双均线,参数通过 params 注入
 STRATEGY = '''

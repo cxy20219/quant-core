@@ -1,13 +1,14 @@
 """NAS 部署验收:健康检查 + tushare 兼容接口 + 延迟基准。
 
 用法:
-    python tools/accept_deploy.py --url http://<nas-host>:8000 [--full]
+    python tools/accept_deploy.py [--url http://<nas-host>:8000] [--full]
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 import urllib.request
@@ -25,7 +26,10 @@ def healthz(base: str) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--url", default="http://<nas-host>:8000")
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from _nasenv import nas_url  # noqa: E402
+
+    parser.add_argument("--url", default=nas_url() or "http://127.0.0.1:8000")
     parser.add_argument("--full", action="store_true", help="跑完整基准(约 1 分钟)")
     args = parser.parse_args()
 

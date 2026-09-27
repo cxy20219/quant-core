@@ -25,7 +25,7 @@ def make_pro(url: str):
 
 
 def main() -> int:
-    url = sys.argv[1] if len(sys.argv) > 1 else "http://<nas-host>:8000"
+    url = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("QUANT_NAS_URL", "http://127.0.0.1:8000")
     pro = make_pro(url)
     print(f"服务地址: {url}\n")
 

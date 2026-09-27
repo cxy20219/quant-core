@@ -1,14 +1,14 @@
-"""在 NAS(<nas-host>)上执行命令,避免 PowerShell 转义问题。
+"""在 NAS 上执行命令(地址见 .env 的 QUANT_NAS_HOST),避免 PowerShell 转义问题。
 
 用法:
     python harness/scripts/remote_exec.py "shell command"
     python harness/scripts/remote_exec.py --sudo "systemctl restart docker"
     python harness/scripts/remote_exec.py --file path/to/script.sh
 
-环境变量(均有默认值):
-    QUANT_NAS_HOST  默认 <nas-host>
-    QUANT_NAS_USER  默认 <nas-user>
-    QUANT_NAS_KEY   默认 %USERPROFILE%\\.ssh\\id_rsa
+环境变量(或写入项目根 .env,该文件不入库):
+    QUANT_NAS_HOST  NAS 地址(必填)
+    QUANT_NAS_USER  SSH 用户(必填)
+    QUANT_NAS_KEY   私钥路径(默认 %USERPROFILE%\\.ssh\\id_rsa)
     QUANT_SUDO_PASS 使用 --sudo 时必需(不落盘、不入库)
 """
 
@@ -23,9 +23,12 @@ warnings.filterwarnings("ignore")
 
 import paramiko
 
-HOST = os.environ.get("QUANT_NAS_HOST", "<nas-host>")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _nasenv import nas_host, nas_user  # noqa: E402
+
+HOST = nas_host()
 PORT = 22
-USER = os.environ.get("QUANT_NAS_USER", "<nas-user>")
+USER = nas_user()
 KEY_PATH = os.environ.get("QUANT_NAS_KEY", os.path.expanduser("~/.ssh/id_rsa"))
 SUDO_PASS = os.environ.get("QUANT_SUDO_PASS", "")
 

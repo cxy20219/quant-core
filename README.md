@@ -85,4 +85,7 @@ df = pro.daily_basic(ts_code="600000.SH", trade_date="20230104",
 
 ## 部署
 
+内网地址与用户名不在仓库中:项目根 `.env` 配置 `QUANT_NAS_HOST` / `QUANT_NAS_USER`
+(该文件已 gitignore),`harness/scripts/*` 与 Makefile 从中读取。
+
 见 `deploy/README.md`。目标服务器:`<nas-user>@<nas-host>`(`/vol1/quant-core`)。

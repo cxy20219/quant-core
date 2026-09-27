@@ -1,4 +1,4 @@
-# quant-core 部署目标:NAS 服务器 cxy-nas(<nas-host>)
+# quant-core 部署目标:NAS 服务器(地址与用户从环境变量读取,见 .env)
 #
 # 用法:
 #   make build-linux          # 交叉编译 linux/amd64 二进制
@@ -8,7 +8,11 @@
 #   make status / make logs   # 远端状态
 
 SHELL := /bin/bash
-NAS_HOST ?= <nas-user>@<nas-host>
+# 先 export NAS_USER/NAS_ADDR(或写入 .env 后 source),例如:
+#   export NAS_USER=<nas-user> NAS_ADDR=<nas-host>
+NAS_USER ?=
+NAS_ADDR ?=
+NAS_HOST := $(NAS_USER)@$(NAS_ADDR)
 NAS_ROOT ?= /vol1/quant-core
 BINARY := bin/quantd-linux-amd64
 IMAGE := quant-core:latest
