@@ -170,6 +170,9 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request) {
 	s.jobs[job.ID] = job
 	s.order = append(s.order, job.ID)
 	s.mu.Unlock()
+	if err := s.persist(job); err != nil {
+		s.logf("backtest %s 记录落盘失败: %v", shortID(job.ID), err)
+	}
 
 	go s.run(job)
 	writeJSON(w, http.StatusAccepted, map[string]any{"id": job.ID, "status": job.Status})
@@ -212,7 +215,10 @@ func (s *Server) run(job *Job) {
 	job.Status = "running"
 	job.StartedAt = time.Now().Format(time.RFC3339)
 	s.mu.Unlock()
-	s.logf("backtest %s 开始: %s", job.ID[:8], job.StrategyName)
+	if err := s.persist(job); err != nil {
+		s.logf("backtest %s 记录落盘失败: %v", shortID(job.ID), err)
+	}
+	s.logf("backtest %s 开始: %s", shortID(job.ID), job.StrategyName)
 
 	req := job.Request
 	freq := req.Frequency
@@ -249,18 +255,18 @@ func (s *Server) run(job *Job) {
 	if err != nil {
 		job.Status = "failed"
 		job.Error = err.Error()
-		s.logf("backtest %s 失败: %v", job.ID[:8], err)
+		s.logf("backtest %s 失败: %v", shortID(job.ID), err)
 	} else {
 		job.Status = "done"
 		btworker.ApplyDisplayCodes(result)
 		job.Result = result
 		job.Summary = summarize(job)
 		s.logf("backtest %s 完成: 收益 %.2f%%, 委托 %d, 成交 %d, 用时 %.1fs",
-			job.ID[:8], result.Summary.TotalReturn*100, result.Summary.OrderCount,
+			shortID(job.ID), result.Summary.TotalReturn*100, result.Summary.OrderCount,
 			result.Summary.TradeCount, result.Summary.ElapsedSecond)
 	}
 	if err := s.persist(job); err != nil {
-		s.logf("backtest %s 结果持久化失败: %v", job.ID[:8], err)
+		s.logf("backtest %s 结果持久化失败: %v", shortID(job.ID), err)
 	}
 }
 
@@ -345,7 +351,8 @@ func (s *Server) loadRecord(id string) *Job {
 	return &job
 }
 
-// LoadRecords 启动时加载历史记录(列表可见)。
+// LoadRecords 启动时加载历史记录(列表可见),并把上次进程遗留的
+// queued/running 作业标记为失败(否则客户端轮询会看到永远"运行中")。
 func (s *Server) LoadRecords() {
 	if s.Config.RecordsDir == "" {
 		return
@@ -359,11 +366,45 @@ func (s *Server) LoadRecords() {
 			continue
 		}
 		id := strings.TrimSuffix(e.Name(), ".json")
-		if job := s.loadRecord(id); job != nil {
-			s.mu.Lock()
-			s.jobs[id] = job
-			s.order = append(s.order, id)
-			s.mu.Unlock()
+		job := s.loadRecord(id)
+		if job == nil {
+			continue
+		}
+		if job.Status == "queued" || job.Status == "running" {
+			job.Status = "failed"
+			job.Error = "服务重启,作业被中断(未完成)"
+			job.FinishedAt = time.Now().Format(time.RFC3339)
+			if err := s.persist(job); err != nil {
+				s.logf("标记中断作业 %s 失败: %v", shortID(id), err)
+			}
+			s.logf("backtest %s 标记为中断(服务重启)", shortID(id))
+		}
+		s.mu.Lock()
+		s.jobs[id] = job
+		s.order = append(s.order, id)
+		s.mu.Unlock()
+	}
+}
+
+// InterruptRunningJobs 停机前把排队中/运行中的作业标记为失败并落盘,
+// 让客户端在服务恢复后能看到明确的中断状态(而不是悬空记录)。
+func (s *Server) InterruptRunningJobs(reason string) {
+	s.mu.Lock()
+	jobs := make([]*Job, 0, len(s.jobs))
+	for _, job := range s.jobs {
+		if job.Status == "queued" || job.Status == "running" {
+			job.Status = "failed"
+			job.Error = reason
+			job.FinishedAt = time.Now().Format(time.RFC3339)
+			jobs = append(jobs, job)
+		}
+	}
+	s.mu.Unlock()
+	for _, job := range jobs {
+		if err := s.persist(job); err != nil {
+			s.logf("标记中断作业 %s 失败: %v", shortID(job.ID), err)
+		} else {
+			s.logf("backtest %s 标记为中断(停机)", shortID(job.ID))
 		}
 	}
 }
@@ -372,6 +413,14 @@ func (s *Server) logf(format string, args ...any) {
 	if s.Logf != nil {
 		s.Logf(format, args...)
 	}
+}
+
+// shortID 返回日志用的短 ID(兼容非 UUID 的短 ID,避免越界)。
+func shortID(id string) string {
+	if len(id) <= 8 {
+		return id
+	}
+	return id[:8]
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

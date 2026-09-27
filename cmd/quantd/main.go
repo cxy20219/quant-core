@@ -18,9 +18,11 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/parquet-go/parquet-go"
@@ -28,6 +30,7 @@ import (
 	"quant-core/internal/btengine"
 	"quant-core/internal/btserver"
 	"quant-core/internal/btworker"
+	"quant-core/internal/httpx"
 	"quant-core/internal/ingest"
 	"quant-core/internal/lake"
 	"quant-core/internal/schema"
@@ -165,14 +168,51 @@ func cmdServe(args []string) {
 	btServer.Logf = log.Printf
 	btServer.LoadRecords()
 
-	handler := http.NewServeMux()
-	handler.Handle("/healthz", server.HealthHandler())
-	handler.Handle("/api/backtests", btServer.Handler())
-	handler.Handle("/api/backtests/", btServer.Handler())
-	handler.Handle("/", server.Handler())
+	mux := http.NewServeMux()
+	mux.Handle("/healthz", server.HealthHandler())
+	mux.Handle("/api/backtests", btServer.Handler())
+	mux.Handle("/api/backtests/", btServer.Handler())
+	mux.Handle("/", server.Handler())
+
+	// 运维硬化(标准库实现,见 internal/httpx):
+	// panic → JSON 500;访问日志;请求体上限(策略代码最大 500KB,留余量);
+	// 超时与优雅停机(容器重启时不打断在途请求,并标记被中断的作业)。
+	handler := httpx.Chain(mux,
+		httpx.Recover(log.Printf),
+		httpx.AccessLog(log.Printf),
+		httpx.MaxBody(8<<20),
+	)
+	srv := &http.Server{
+		Addr:              *listen,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		WriteTimeout:      5 * time.Minute, // 大结果集/长查询留足写时间
+		IdleTimeout:       2 * time.Minute,
+		MaxHeaderBytes:    1 << 20,
+	}
 	log.Printf("quantd serving on %s lake=%s registry=%s records=%s", *listen, *lakeDir, *registryPath, *recordsDir)
-	if err := http.ListenAndServe(*listen, handler); err != nil {
+
+	errCh := make(chan error, 1)
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			errCh <- err
+		}
+	}()
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	select {
+	case err := <-errCh:
 		log.Fatalf("serve: %v", err)
+	case sig := <-sigCh:
+		log.Printf("收到 %s,开始优雅停机(最多 30s)...", sig)
+		btServer.InterruptRunningJobs("服务重启,作业被中断")
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(ctx); err != nil {
+			log.Printf("优雅停机未完成: %v", err)
+		}
+		log.Printf("已停机")
 	}
 }
 

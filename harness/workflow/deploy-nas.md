@@ -65,6 +65,8 @@
   - `exec: "/app/quantd": permission denied` → 二进制上传后未加执行位;Dockerfile 已带 `chmod +x`,若是旧镜像需重建。
   - `docker build` 拉基础镜像超时 → 镜像源失效,见 `harness/references/nas-server.md`。
   - 容器起来但接口报 `unknown api_name` → 服务器上 `etc/datasets.yaml` 是旧版注册表。
+- 重启/更新镜像时服务会优雅停机(SIGTERM → 等在途请求最多 30s,并把在途回测作业标记为中断);
+  验收信号:`docker logs quantd` 出现 `收到 terminated,开始优雅停机` 与 `已停机`。
   - 数据分区数偏少 → 数据湖未传完(用 upload 脚本重跑,它会跳过已传文件)。
 
 ## 回滚

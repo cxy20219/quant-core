@@ -42,6 +42,24 @@ POST 策略+参数 → 作业队列 → { Go 引擎 ⇄ Python 策略子进程 }
    # → {"id":"...","status":"queued"}
    ```
 
+### 作业生命周期与重启语义
+
+- 提交即落盘(`/data/backtests/<id>.json`,状态 `queued`),开始执行时更新为 `running`,
+  结束时写 `done`/`failed` + 结果;客户端可随时按 id 查询(进程内作业与磁盘记录一致)。
+- **服务重启**:收到 SIGTERM 后先做优雅停机(最多 30s 等在途请求),
+  并把排队中/运行中的作业标记为 `failed`(`error="服务重启,作业被中断"`)后落盘;
+  启动时也会把上次遗留的 `queued/running` 记录标记为中断。
+  因此重启不会"静默丢作业":轮询方一定能看到明确终态。
+- 作业在**进程内**执行(不跨重启续跑);需要长任务请分批提交。
+
+### HTTP 运维硬化(标准库实现,见 `internal/httpx`)
+
+- 超时:`ReadHeaderTimeout=10s`、`ReadTimeout=60s`、`WriteTimeout=5min`、`IdleTimeout=2min`;
+- 请求体上限 8MB(策略代码本身限 500KB);
+- panic 恢复为 JSON 500(数据接口用 tushare 信封,`/api/*` 用 `{"error":...}`)+ 堆栈日志;
+- 访问日志:`POST / 200 494B 25.7ms` 形式,便于排障与延迟观察;
+- 优雅停机:容器 `docker compose restart/up -d` 不会打断在途请求。
+
 2. **查询结果**:
 
    ```bash
