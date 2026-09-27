@@ -76,6 +76,9 @@ type JobSummary struct {
 	SharpeRatio  float64 `json:"sharpe_ratio"`
 	OrderCount   int     `json:"order_count"`
 	TradeCount   int     `json:"trade_count"`
+	// FinalValue / ElapsedSeconds 来自引擎 summary(列表即可看到期末与耗时)
+	FinalValue     float64 `json:"final_value"`
+	ElapsedSeconds float64 `json:"elapsed_seconds"`
 }
 
 // BacktestRequest 是提交回测的请求体。
@@ -285,6 +288,8 @@ func summarize(job *Job) *JobSummary {
 		out.TotalReturn = job.Result.Summary.TotalReturn
 		out.OrderCount = job.Result.Summary.OrderCount
 		out.TradeCount = job.Result.Summary.TradeCount
+		out.FinalValue = job.Result.Summary.FinalValue
+		out.ElapsedSeconds = job.Result.Summary.ElapsedSecond
 		if v, ok := job.Result.Analytics["max_drawdown"].(float64); ok {
 			out.MaxDrawdown = v
 		}
@@ -307,10 +312,8 @@ func (s *Server) list(w http.ResponseWriter) {
 		if job == nil {
 			continue
 		}
-		summary := job.Summary
-		if summary == nil {
-			summary = summarize(job)
-		}
+		// 总是按当前记录重算概要:磁盘上持久化的概要可能来自旧版本或已过期
+		summary := summarize(job)
 		records = append(records, summary)
 	}
 	sort.Slice(records, func(i, j int) bool { return records[i].CreatedAt > records[j].CreatedAt })

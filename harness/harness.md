@@ -56,6 +56,7 @@
 - 公司行动对拍:`python harness/scripts/parity_check.py --cases harness/assets/quant-corporate-cases.json --check-logs`
 - 回测性能基准:`python harness/scripts/bench_backtest.py --stocks 300 [--access some|all]`
 - 在线接口文档:服务起来后浏览器打开 `http://<host>:8000/docs`(OpenAPI:`/docs/openapi.json`)
+- 管理面板:浏览器打开 `http://<host>:8000/panel`(数据同步状态 / 回测结果 / 因子入口)
 - 截面物化:`quantd build-cross --lake <lake>`(数据更新后执行;全市场单日筛选提速)
 - 数据导入:`go run ./cmd/quantd import --dataset stock_basic --lake D:\quant-lake`
 - 扫描诊断:`go run ./tools/lakediag --lake D:\quant-lake --dataset bars_daily --filter ts_code=600000.SH --start 20240101 --end 20241231`

@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>quant-core 管理面板</title>
+<style>
+  :root { --fg:#1f2328; --muted:#656d76; --line:#d0d7de; --bg:#ffffff; --code:#f6f8fa;
+          --accent:#0969da; --ok:#1a7f37; --warn:#9a6700; --err:#cf222e; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.6 -apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+         color:var(--fg); background:var(--bg); }
+  header { padding:16px 24px; border-bottom:1px solid var(--line); display:flex; align-items:baseline; gap:16px; flex-wrap:wrap; }
+  header h1 { margin:0; font-size:18px; }
+  header .meta { color:var(--muted); font-size:12px; }
+  nav { padding:0 24px; border-bottom:1px solid var(--line); display:flex; gap:4px; }
+  nav button { border:0; background:none; padding:10px 14px; cursor:pointer; font-size:14px; color:var(--muted);
+               border-bottom:2px solid transparent; }
+  nav button.active { color:var(--fg); border-bottom-color:var(--accent); font-weight:600; }
+  main { padding:20px 24px; max-width:1400px; }
+  h2 { font-size:16px; margin:0 0 12px; }
+  h3 { font-size:14px; margin:18px 0 8px; }
+  table { border-collapse:collapse; width:100%; margin:8px 0 16px; }
+  th,td { border:1px solid var(--line); padding:5px 8px; text-align:left; vertical-align:top; white-space:nowrap; }
+  th { background:var(--code); font-weight:600; }
+  td.num { text-align:right; font-variant-numeric:tabular-nums; }
+  code { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; background:var(--code); padding:1px 4px; border-radius:4px; }
+  .cards { display:flex; gap:12px; flex-wrap:wrap; margin-bottom:18px; }
+  .card { border:1px solid var(--line); border-radius:8px; padding:12px 16px; min-width:170px; }
+  .card .k { color:var(--muted); font-size:12px; }
+  .card .v { font-size:20px; font-variant-numeric:tabular-nums; }
+  .muted { color:var(--muted); }
+  .pill { display:inline-block; padding:0 8px; border-radius:999px; font-size:12px; border:1px solid var(--line); }
+  .pill.ok { color:var(--ok); border-color:var(--ok); }
+  .pill.warn { color:var(--warn); border-color:var(--warn); }
+  .pill.err { color:var(--err); border-color:var(--err); }
+  .pill.run { color:var(--accent); border-color:var(--accent); }
+  details { margin:6px 0 14px; }
+  summary { cursor:pointer; color:var(--accent); }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  pre { background:var(--code); padding:10px 12px; border-radius:6px; overflow:auto; max-height:340px; font-size:12px; }
+  .toolbar { display:flex; gap:10px; align-items:center; margin-bottom:12px; }
+  button.btn { border:1px solid var(--line); background:var(--code); border-radius:6px; padding:5px 12px; cursor:pointer; }
+  .chart { border:1px solid var(--line); border-radius:8px; padding:8px; background:#fff; }
+  .placeholder { border:1px dashed var(--line); border-radius:8px; padding:20px; color:var(--muted); }
+  tr.clickable { cursor:pointer; }
+  tr.clickable:hover { background:var(--code); }
+</style>
+</head>
+<body>
+<header>
+  <h1>quant-core 管理面板</h1>
+  <span class="meta">启动于 {{.Started}} · <a href="/docs">接口文档</a> · <a href="/healthz">健康检查</a></span>
+</header>
+<nav>
+  <button data-tab="overview" class="active">概览</button>
+  <button data-tab="sync">数据同步</button>
+  <button data-tab="backtest">回测结果</button>
+  <button data-tab="factor">因子(规划中)</button>
+</nav>
+<main>
+  <section id="tab-overview"></section>
+  <section id="tab-sync" hidden></section>
+  <section id="tab-backtest" hidden></section>
+  <section id="tab-factor" hidden>
+    <h2>因子管理 / 因子跟踪(规划中)</h2>
+    <div class="placeholder">
+      <p>本页预留给后续的因子能力,计划包含:</p>
+      <ul>
+        <li><b>因子管理</b>:因子注册(名称/口径/依赖数据)、版本与生效区间、按数据集校验覆盖率</li>
+        <li><b>因子跟踪</b>:IC / RankIC 时序、分层收益、换手与衰减、与回测结果关联</li>
+        <li><b>数据支撑</b>:基于 <code>daily_cross</code> 截面表与批量历史口径计算,结果落盘到湖的 <code>meta</code> 侧</li>
+      </ul>
+      <p>接口形态会沿用现有风格:<code>POST /api/factors</code> 注册、<code>GET /api/factors/{id}/tracking</code> 查询跟踪结果。</p>
+    </div>
+  </section>
+</main>
+<script>
+const fmtInt = n => (n === null || n === undefined || n === '') ? '-' : Number(n).toLocaleString('en-US');
+const fmtBytes = n => {
+  if (!n) return '0 B';
+  const u = ['B','KB','MB','GB','TB']; let i = 0, v = n;
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  return v.toFixed(v >= 100 ? 0 : 1) + ' ' + u[i];
+};
+const esc = s => String(s === null || s === undefined ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+async function getJSON(url) {
+  const resp = await fetch(url, { headers: { 'Accept': 'application/json' } });
+  if (!resp.ok) throw new Error(url + ' -> HTTP ' + resp.status);
+  return resp.json();
+}
+
+function statusPill(status) {
+  const map = { done: 'ok', failed: 'err', running: 'run', queued: 'warn' };
+  return '<span class="pill ' + (map[status] || '') + '">' + esc(status) + '</span>';
+}
+
+const tabs = {
+  overview: { el: document.getElementById('tab-overview'), render: renderOverview },
+  sync: { el: document.getElementById('tab-sync'), render: renderSync },
+  backtest: { el: document.getElementById('tab-backtest'), render: () => renderBacktest() },
+  factor: { el: document.getElementById('tab-factor'), render: async () => {} },
+};
+document.querySelectorAll('nav button').forEach(btn => {
+  btn.onclick = () => {
+    document.querySelectorAll('nav button').forEach(b => b.classList.toggle('active', b === btn));
+    Object.entries(tabs).forEach(([k, t]) => { t.el.hidden = (k !== btn.dataset.tab); });
+    tabs[btn.dataset.tab].render();
+  };
+});
+
+// ── 概览 ────────────────────────────────────────────────────────────────
+async function renderOverview() {
+  const el = tabs.overview.el;
+  el.innerHTML = '<p class="muted">加载中…</p>';
+  try {
+    const [ov, jobs] = await Promise.all([getJSON('/panel/api/overview'), getJSON('/api/backtests')]);
+    const records = jobs.records || [];
+    const running = records.filter(r => r.status === 'running' || r.status === 'queued').length;
+    const done = records.filter(r => r.status === 'done').length;
+    el.innerHTML = [
+      '<h2>服务概览</h2>',
+      '<div class="cards">',
+      card('数据集', fmtInt(ov.service.datasets)),
+      card('湖内总行数(manifest)', fmtInt(ov.lake.total_rows)),
+      card('Parquet 文件', fmtInt(ov.lake.total_files)),
+      card('磁盘占用', fmtBytes(ov.lake.total_bytes)),
+      card('最近同步', ov.lake.last_sync || '-'),
+      card('回测作业(完成/在途)', fmtInt(done) + ' / ' + fmtInt(running)),
+      '</div>',
+      '<h3>运行信息</h3>',
+      '<table>',
+      '<tr><th>项目</th><th>值</th></tr>',
+      row('服务启动', esc(ov.service.started)),
+      row('已运行', esc(ov.service.uptime)),
+      row('数据湖', '<code>' + esc(ov.service.lake) + '</code>'),
+      row('数据源配置', ov.service.sources ? '<code>' + esc(ov.service.sources) + '</code>' : '<span class="muted">未配置</span>'),
+      row('生成时间', esc(ov.service.generated_at)),
+      '</table>',
+      '<h3>最近回测</h3>',
+      jobsTable(records.slice(0, 5)),
+    ].join('');
+  } catch (e) { el.innerHTML = '<p class="pill err">加载失败: ' + esc(e.message) + '</p>'; }
+}
+
+function card(k, v) { return '<div class="card"><div class="k">' + esc(k) + '</div><div class="v">' + v + '</div></div>'; }
+function row(k, v) { return '<tr><td>' + esc(k) + '</td><td>' + v + '</td></tr>'; }
+
+function jobsTable(records) {
+  if (!records.length) return '<p class="muted">暂无作业</p>';
+  return '<table><tr><th>作业</th><th>策略</th><th>状态</th><th>区间</th><th class="num">期末</th><th class="num">收益</th>' +
+    '<th class="num">最大回撤</th><th class="num">夏普</th><th class="num">委托/成交</th><th class="num">耗时(s)</th><th>创建时间</th></tr>' +
+    records.map(r => {
+      const s = r; // 列表记录本身即 JobSummary(字段在顶层)
+      const ret = (s.total_return === undefined || s.total_return === null) ? '-' : (s.total_return * 100).toFixed(2) + '%';
+      return '<tr class="clickable" onclick="openJob(\'' + esc(r.id) + '\')">' +
+        '<td><code>' + esc(String(r.id || '').slice(0, 8)) + '</code></td>' +
+        '<td>' + esc(r.strategy_name) + '</td>' +
+        '<td>' + statusPill(r.status) + '</td>' +
+        '<td>' + esc(s.start_date || r.start_date || '') + ' ~ ' + esc(s.end_date || r.end_date || '') + '</td>' +
+        '<td class="num">' + (s.final_value ? fmtInt(Math.round(s.final_value)) : '-') + '</td>' +
+        '<td class="num">' + ret + '</td>' +
+        '<td class="num">' + (s.max_drawdown === undefined ? '-' : (s.max_drawdown * 100).toFixed(2) + '%') + '</td>' +
+        '<td class="num">' + (s.sharpe_ratio === undefined ? '-' : Number(s.sharpe_ratio).toFixed(2)) + '</td>' +
+        '<td class="num">' + fmtInt(s.order_count) + '/' + fmtInt(s.trade_count) + '</td>' +
+        '<td class="num">' + (s.elapsed_seconds ? Number(s.elapsed_seconds).toFixed(1) : '-') + '</td>' +
+        '<td>' + esc(r.created_at) + '</td></tr>';
+    }).join('') + '</table>';
+}
+
+// ── 数据同步 ────────────────────────────────────────────────────────────
+async function renderSync() {
+  const el = tabs.sync.el;
+  el.innerHTML = '<p class="muted">加载中…</p>';
+  try {
+    const [sync, src] = await Promise.all([getJSON('/panel/api/sync'), getJSON('/panel/api/sources')]);
+    const rows = sync.datasets || [];
+    const bindings = src.bindings || {};
+    el.innerHTML = [
+      '<div class="toolbar">',
+      '<button class="btn" onclick="renderSync()">刷新</button>',
+      '<span class="muted">行数/批次来自 manifest;磁盘统计 60 秒缓存</span>',
+      '</div>',
+      '<h2>数据集同步状态</h2>',
+      '<table>',
+      '<tr><th>数据集</th><th>说明</th><th>分区</th><th class="num">行数</th><th class="num">批次</th>',
+      '<th class="num">文件</th><th class="num">磁盘</th><th>最后更新</th><th class="num">距今(天)</th><th>最近操作</th><th>状态</th></tr>',
+      rows.map(r => {
+        let pill = '<span class="pill ok">正常</span>';
+        if (r.missing) pill = '<span class="pill err">无数据</span>';
+        else if (r.last_time && r.days_ago > 7) pill = '<span class="pill warn">' + r.days_ago + ' 天未更新</span>';
+        const link = bindings[r.dataset] ? bindings[r.dataset].join(' → ') : '';
+        return '<tr>' +
+          '<td><code>' + esc(r.dataset) + '</code></td>' +
+          '<td class="muted">' + esc(r.description) + (link ? '<br>源: ' + esc(link) : '') + '</td>' +
+          '<td>' + esc(r.partitions || '-') + '</td>' +
+          '<td class="num">' + fmtInt(r.rows) + '</td>' +
+          '<td class="num">' + fmtInt(r.batches) + '</td>' +
+          '<td class="num">' + fmtInt(r.disk_files) + '</td>' +
+          '<td class="num">' + fmtBytes(r.disk_bytes) + '</td>' +
+          '<td>' + (esc(r.last_time) || '-') + '</td>' +
+          '<td class="num">' + (r.last_time ? r.days_ago : '-') + '</td>' +
+          '<td>' + esc(r.last_op || '-') + '</td>' +
+          '<td>' + pill + '</td></tr>';
+      }).join(''),
+      '</table>',
+      '<details><summary>最近批次明细(每数据集最近 8 条)</summary>',
+      rows.filter(r => r.recent && r.recent.length).map(r => [
+        '<h3><code>' + esc(r.dataset) + '</code></h3>',
+        '<table><tr><th>批次</th><th>操作</th><th>来源</th><th class="num">行数</th><th>时间</th></tr>',
+        r.recent.slice().reverse().map(b => '<tr><td><code>' + esc(b.id) + '</code></td><td>' + esc(b.operation) +
+          '</td><td class="muted">' + esc(b.source) + '</td><td class="num">' + fmtInt(b.rows) + '</td><td>' + esc(b.created_at) + '</td></tr>').join(''),
+        '</table>',
+      ].join('')).join(''),
+      '</details>',
+      '<h2>数据源</h2>',
+      '<p class="muted">' + esc(src.note || '') + '</p>',
+      '<table>',
+      '<tr><th>源</th><th>类型</th><th>说明</th><th>状态</th><th>绑定数据集</th></tr>',
+      (src.sources || []).map(s => {
+        const bound = Object.keys(bindings).filter(ds => bindings[ds].indexOf(s.name) >= 0);
+        return '<tr><td><code>' + esc(s.name) + '</code></td><td>' + esc(s.kind) + '</td>' +
+          '<td class="muted">' + esc(s.description) + '</td>' +
+          '<td>' + (s.disabled ? '<span class="pill warn">disabled</span>' : '<span class="pill ok">enabled</span>') + '</td>' +
+          '<td class="muted">' + esc(bound.join(', ') || '-') + '</td></tr>';
+      }).join(''),
+      '</table>',
+    ].join('');
+  } catch (e) { el.innerHTML = '<p class="pill err">加载失败: ' + esc(e.message) + '</p>'; }
+}
+
+// ── 回测结果 ────────────────────────────────────────────────────────────
+let currentJob = null;
+async function renderBacktest(jobId) {
+  const el = tabs.backtest.el;
+  if (jobId !== undefined) currentJob = jobId;
+  el.innerHTML = '<p class="muted">加载中…</p>';
+  try {
+    if (!currentJob) {
+      const jobs = await getJSON('/api/backtests');
+      const records = jobs.records || [];
+      el.innerHTML = [
+        '<div class="toolbar"><button class="btn" onclick="renderBacktest()">刷新</button>',
+        '<span class="muted">共 ' + records.length + ' 条(记录目录持久化,重启不丢;有在途作业时每 10 秒自动刷新)</span></div>',
+        '<h2>回测作业</h2>',
+        jobsTable(records.slice(0, 50)),
+      ].join('');
+      return;
+    }
+    const job = await getJSON('/api/backtests/' + encodeURIComponent(currentJob));
+    const res = job.result || {};
+    const s = Object.assign({}, job.summary || {}, res.summary || {});
+    const nav = res.portfolio || [];
+    const req = job.request || {};
+    el.innerHTML = [
+      '<div class="toolbar"><button class="btn" onclick="currentJob=null;renderBacktest()">← 返回列表</button>',
+      '<button class="btn" onclick="renderBacktest()">刷新</button></div>',
+      '<h2>作业 <code>' + esc(job.id) + '</code> ' + statusPill(job.status) + '</h2>',
+      '<table>',
+      '<tr><th>策略</th><td>' + esc(job.strategy_name) + '</td><th>状态</th><td>' + esc(job.status) + '</td></tr>',
+      '<tr><th>区间</th><td>' + esc(req.start_date) + ' ~ ' + esc(req.end_date) + '</td><th>频率</th><td>' + esc(req.frequency || '1d') + '</td></tr>',
+      '<tr><th>创建</th><td>' + esc(job.created_at) + '</td><th>完成</th><td>' + esc(job.finished_at || '-') + '</td></tr>',
+      job.error ? '<tr><th>错误</th><td colspan="3"><span class="pill err">' + esc(job.error) + '</span></td></tr>' : '',
+      '</table>',
+      '<div class="cards">',
+      card('期末资产', s.final_value ? fmtInt(Math.round(s.final_value)) : '-'),
+      card('总收益', (s.total_return === undefined || s.total_return === null) ? '-' : (s.total_return * 100).toFixed(2) + '%'),
+      card('委托 / 成交', fmtInt(s.order_count) + ' / ' + fmtInt(s.trade_count)),
+      card('净值行数', fmtInt(nav.length)),
+      card('引擎耗时', s.elapsed_seconds ? Number(s.elapsed_seconds).toFixed(1) + 's' : '-'),
+      '</div>',
+      '<h3>净值曲线</h3><div class="chart">' + navChart(nav) + '</div>',
+      '<div class="grid2">',
+      '<div><h3>委托</h3>' + ordersTable(res.orders || []) + '</div>',
+      '<div><h3>成交</h3>' + tradesTable(res.trades || []) + '</div>',
+      '</div>',
+      '<details><summary>策略日志(' + (res.logs || []).length + ' 条)</summary><pre>' +
+        esc((res.logs || []).map(l => l.level + ' ' + l.message).join('\n')) + '</pre></details>',
+      '<details><summary>参数</summary><pre>' + esc(JSON.stringify(job.params || {}, null, 2)) + '</pre></details>',
+    ].join('');
+  } catch (e) { el.innerHTML = '<p class="pill err">加载失败: ' + esc(e.message) + '</p>'; }
+}
+
+function openJob(id) {
+  document.querySelector('nav button[data-tab="backtest"]').click();
+  renderBacktest(id);
+}
+
+function navChart(nav) {
+  if (!nav || nav.length < 2) return '<p class="muted">无净值数据</p>';
+  const w = 1100, h = 220, pad = 36;
+  const vals = nav.map(r => Number(r.portfolio_value));
+  const min = Math.min.apply(null, vals), max = Math.max.apply(null, vals);
+  const span = (max - min) || 1;
+  const pts = vals.map((v, i) => {
+    const x = pad + (w - 2 * pad) * i / (vals.length - 1);
+    const y = h - pad - (h - 2 * pad) * (v - min) / span;
+    return x.toFixed(1) + ',' + y.toFixed(1);
+  }).join(' ');
+  const first = vals[0], last = vals[vals.length - 1];
+  const ret = ((last / first - 1) * 100).toFixed(2);
+  const color = last >= first ? '#1a7f37' : '#cf222e';
+  return '<svg viewBox="0 0 ' + w + ' ' + h + '" width="100%" height="' + h + '">' +
+    '<polyline fill="none" stroke="' + color + '" stroke-width="1.6" points="' + pts + '" />' +
+    '<line x1="' + pad + '" y1="' + (h - pad) + '" x2="' + (w - pad) + '" y2="' + (h - pad) + '" stroke="#d0d7de" />' +
+    '<text x="' + pad + '" y="16" font-size="12" fill="#656d76">最高 ' + fmtInt(Math.round(max)) + '</text>' +
+    '<text x="' + pad + '" y="' + (h - 6) + '" font-size="12" fill="#656d76">最低 ' + fmtInt(Math.round(min)) + '</text>' +
+    '<text x="' + (w - pad) + '" y="16" font-size="12" fill="' + color + '" text-anchor="end">区间收益 ' + ret + '%</text>' +
+    '<text x="' + (w - pad) + '" y="' + (h - 6) + '" font-size="12" fill="#656d76" text-anchor="end">' +
+      esc(nav[0].date || '') + ' ~ ' + esc(nav[nav.length - 1].date || '') + '</text>' +
+    '</svg>';
+}
+
+function ordersTable(orders) {
+  if (!orders.length) return '<p class="muted">无</p>';
+  return '<table><tr><th>时间</th><th>代码</th><th class="num">数量</th><th class="num">成交</th><th class="num">限价</th><th>状态</th></tr>' +
+    orders.map(o => '<tr><td>' + esc(o.created_at) + '</td><td>' + esc(o.security) + '</td>' +
+      '<td class="num">' + fmtInt(o.amount) + '</td><td class="num">' + fmtInt(o.filled) + '</td>' +
+      '<td class="num">' + (o.limit_price || '-') + '</td><td>' + esc(o.status) + '</td></tr>').join('') + '</table>';
+}
+
+function tradesTable(trades) {
+  if (!trades.length) return '<p class="muted">无</p>';
+  return '<table><tr><th>时间</th><th>代码</th><th>方向</th><th class="num">数量</th><th class="num">价格</th><th class="num">金额</th></tr>' +
+    trades.map(t => '<tr><td>' + esc(t.trade_time) + '</td><td>' + esc(t.security) + '</td>' +
+      '<td>' + (t.side === 'buy' ? '买入' : '卖出') + '</td><td class="num">' + fmtInt(t.amount) + '</td>' +
+      '<td class="num">' + Number(t.price).toFixed(3) + '</td><td class="num">' + fmtInt(Math.round(t.value)) + '</td></tr>').join('') + '</table>';
+}
+
+renderOverview();
+setInterval(() => { if (!tabs.backtest.el.hidden && !currentJob) renderBacktest(); }, 10000);
+</script>
+</body>
+</html>

@@ -82,7 +82,11 @@ POST 策略+参数 → 作业队列 → { Go 引擎 ⇄ Python 策略子进程 }
    python examples/use_backtest_service.py http://<nas-host>:8000
    ```
 
-## 在线文档
+## 在线文档与管理面板
+
+- 管理面板 `GET /panel`:概览(服务/湖/作业)、数据同步状态(manifest 行数/批次/磁盘/数据源绑定)、
+  回测结果(作业列表 + 净值曲线 + 委托/成交/日志);因子管理/跟踪为预留页签。
+  面板只读、无鉴权(与 `/docs` 一致,限可信内网);回测数据复用 `/api/backtests`。
 
 - 服务内置接口文档页:`GET /docs`(数据接口参数/字段/单位/示例 + 回测接口 + 策略 API),
   由接口表(`internal/tsapi/apis.go`)与数据集注册表(`schemas/datasets.yaml`)自动生成;

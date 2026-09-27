@@ -40,6 +40,8 @@ services:
       - --lake=/data/lake
       - --registry=/etc/quant-core/datasets.yaml
       - --records=/data/backtests
+      # 管理面板(数据同步状态 + 回测结果)展示用数据源配置
+      - --sources=/etc/quant-core/sources.yaml
       - --listen=:8000
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8000/healthz"]

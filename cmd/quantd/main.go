@@ -33,6 +33,7 @@ import (
 	"quant-core/internal/httpx"
 	"quant-core/internal/ingest"
 	"quant-core/internal/lake"
+	"quant-core/internal/panel"
 	"quant-core/internal/schema"
 	"quant-core/internal/source"
 	"quant-core/internal/tsapi"
@@ -141,6 +142,7 @@ func cmdServe(args []string) {
 	listen := fs.String("listen", ":8000", "监听地址")
 	tokens := fs.String("tokens", os.Getenv("QUANTD_TOKENS"), "逗号分隔的访问令牌(默认读 QUANTD_TOKENS)")
 	recordsDir := fs.String("records", "", "回测记录目录(默认 <lake>/../backtests)")
+	sourcesPath := fs.String("sources", filepath.Join("etc", "sources.yaml"), "数据源注册表(面板展示用,可选)")
 	pythonBin := fs.String("python", os.Getenv("QUANT_PYTHON"), "Python 解释器(默认 python3/python)")
 	workerScript := fs.String("worker-script", "", "策略 worker.py 路径(默认自动定位)")
 	maxConcurrent := fs.Int("max-backtests", 2, "并发回测数上限")
@@ -171,11 +173,20 @@ func cmdServe(args []string) {
 	btServer.Logf = log.Printf
 	btServer.LoadRecords()
 
+	// 管理面板:数据同步状态 + 回测结果(后续因子管理入口)
+	panelSrv := panel.NewServer(panel.Config{
+		Lake:        l,
+		SourcesPath: *sourcesPath,
+		Logf:        log.Printf,
+	})
+
 	mux := http.NewServeMux()
 	mux.Handle("/healthz", server.HealthHandler())
 	mux.Handle("/docs", server.DocsHandler())
 	mux.Handle("/docs/", server.DocsHandler())
 	mux.Handle("/docs/openapi.json", server.OpenAPIHandler())
+	mux.Handle("/panel", panelSrv.Handler())
+	mux.Handle("/panel/", panelSrv.Handler())
 	mux.Handle("/api/backtests", btServer.Handler())
 	mux.Handle("/api/backtests/", btServer.Handler())
 	mux.Handle("/", server.Handler())
