@@ -86,7 +86,10 @@ bindings:
 ## 验证
 
 - 成功信号:`source check` 输出 `[ok]`;`import` 输出 `dataset <x> imported: N rows`;`verify` 输出 `OK ... rows=N`。
-- 数据语义校验(换源后必须做):
+- 数据语义校验(换源后必须做;已实测 B 站会忽略过滤条件返回全表/样例/子集):
+  - 主键去重已在导入时自动执行(见 importSnapshot),dedupe 可复核;
+  - 日期字段非空率(stock_basic 的 list_date 曾因源返回数字而全部为空,已修);
+  - 与另一源的全表计数交叉核对(source compare);
   - `trade_cal` 覆盖率 = 区间内每个自然日一行(2024 SSE 应为 366 行,只含交易日=242 行属语义差异);
   - `stk_limit` 单日行数 ≈ 当日上市股票数(约 5500);
   - 单位:`suspend_d`/`index_daily` 字段与 tushare 一致。

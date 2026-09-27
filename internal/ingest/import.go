@@ -156,15 +156,16 @@ func SpecByName(dataset string) (*Spec, error) {
 	return nil, fmt.Errorf("未知数据集 %q(可用: %s)", dataset, strings.Join(SpecNames(), ", "))
 }
 
-// stockBasicSlices 生成股票列表切片:list_status × exchange。
+// stockBasicSlices 生成股票列表切片:按上市状态切片。
+//
+// 不用 exchange 细分:B 站对过滤参数不可靠(实测同批切片有返回全表/样例/子集),
+// 细分切片越多,单个切片静默缺失的风险越大;改为整表拉取 + 按主键去重,
+// 完整性用 `source compare` 与源交叉核对(见 harness/workflow/tushare-data-import.md)。
 func stockBasicSlices() []map[string]string {
 	statuses := []string{"L", "D", "P"}
-	exchanges := []string{"SSE", "SZSE", "BSE"}
-	out := make([]map[string]string, 0, len(statuses)*len(exchanges))
+	out := make([]map[string]string, 0, len(statuses))
 	for _, status := range statuses {
-		for _, exchange := range exchanges {
-			out = append(out, map[string]string{"list_status": status, "exchange": exchange})
-		}
+		out = append(out, map[string]string{"list_status": status})
 	}
 	return out
 }
@@ -309,10 +310,12 @@ func (t *Importer) importSnapshot(ctx context.Context, ds *schema.Dataset, spec 
 	if len(slices) == 0 {
 		slices = []map[string]string{nil}
 	}
-	// 收集:分区键 → 行
+	// 收集:分区键 → 行;同时按主键去重(快照接口在部分中转站会返回重复行)
 	groups := map[string][][]schema.Value{}
 	order := []string{}
-	var total int64
+	keyIdx := ds.PrimaryKeyIndexes()
+	seen := map[string]bool{}
+	var total, dupRemoved int64
 	for sliceIdx, slice := range slices {
 		if ctx.Err() != nil {
 			return total, ctx.Err()
@@ -334,6 +337,14 @@ func (t *Importer) importSnapshot(ctx context.Context, ds *schema.Dataset, spec 
 			if err != nil {
 				return total, err
 			}
+			if len(keyIdx) > 0 {
+				key := schema.PrimaryKeyString(row, keyIdx)
+				if seen[key] {
+					dupRemoved++
+					continue
+				}
+				seen[key] = true
+			}
 			key := ""
 			if len(ds.Partitions) > 0 && spec.PartitionFromField != "" {
 				if idx := indexOf(result.Fields, spec.PartitionFromField); idx >= 0 && idx < len(item) {
@@ -348,6 +359,9 @@ func (t *Importer) importSnapshot(ctx context.Context, ds *schema.Dataset, spec 
 			groups[key] = append(groups[key], row)
 		}
 		t.logf("fetched %s slice=%d/%d rows=%d", ds.Name, sliceIdx+1, len(slices), len(result.Items))
+	}
+	if dupRemoved > 0 {
+		t.logf("dataset %s: 快照导入按主键去重 %d 行(源返回重复)", ds.Name, dupRemoved)
 	}
 	sort.Strings(order)
 	for _, key := range order {
@@ -635,6 +649,92 @@ func (t *Importer) rowFromItem(ds *schema.Dataset, fields []string, item []any) 
 	return row, nil
 }
 
+// parseDateValue 解析日期字段:兼容字符串("20240102"/"2024-01-02")与数字(20240102)。
+// 中转站不同接口对同一字段的类型返回不一致(如 stock_basic 的 list_date 是数字,
+// index_basic 的 list_date 是字符串),必须两种都接受,避免静默置空。
+func parseDateValue(raw any) (schema.Value, error) {
+	switch v := raw.(type) {
+	case string:
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return schema.NullValue(), nil
+		}
+		days, err := schema.ParseDate(v)
+		if err != nil {
+			return schema.NullValue(), err
+		}
+		return schema.Date(days), nil
+	case float64:
+		return dateFromNumber(int64(v))
+	case int64:
+		return dateFromNumber(v)
+	case int:
+		return dateFromNumber(int64(v))
+	default:
+		return schema.NullValue(), fmt.Errorf("cannot convert %T to date", raw)
+	}
+}
+
+func dateFromNumber(n int64) (schema.Value, error) {
+	if n <= 0 {
+		return schema.NullValue(), nil
+	}
+	days, err := schema.ParseDate(fmt.Sprintf("%08d", n))
+	if err != nil {
+		return schema.NullValue(), err
+	}
+	return schema.Date(days), nil
+}
+
+// parseTimestampValue 解析时间戳字段:兼容字符串与数字(YYYYMMDD / YYYYMMDDHHMMSS / epoch 秒)。
+func parseTimestampValue(raw any) (schema.Value, error) {
+	switch v := raw.(type) {
+	case string:
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return schema.NullValue(), nil
+		}
+		tm, err := parseAnyTime(v)
+		if err != nil {
+			return schema.NullValue(), err
+		}
+		return schema.Timestamp(schema.MicrosFromTime(tm)), nil
+	case float64:
+		return timestampFromNumber(int64(v))
+	case int64:
+		return timestampFromNumber(v)
+	case int:
+		return timestampFromNumber(int64(v))
+	default:
+		return schema.NullValue(), fmt.Errorf("cannot convert %T to timestamp", raw)
+	}
+}
+
+func timestampFromNumber(n int64) (schema.Value, error) {
+	if n <= 0 {
+		return schema.NullValue(), nil
+	}
+	s := fmt.Sprintf("%d", n)
+	var layout string
+	switch len(s) {
+	case 8:
+		layout = "20060102"
+	case 12:
+		layout = "200601021504"
+	case 14:
+		layout = "20060102150405"
+	default:
+		// 视为 epoch 秒
+		tm := time.Unix(n, 0).UTC()
+		return schema.Timestamp(schema.MicrosFromTime(tm)), nil
+	}
+	tm, err := time.Parse(layout, s)
+	if err != nil {
+		return schema.NullValue(), err
+	}
+	return schema.Timestamp(schema.MicrosFromTime(tm)), nil
+}
+
 // convertSourceValue 把数据源的 JSON 值转换为逻辑值。
 func convertSourceValue(raw any, ft schema.FieldType) (schema.Value, error) {
 	if raw == nil {
@@ -651,25 +751,9 @@ func convertSourceValue(raw any, ft schema.FieldType) (schema.Value, error) {
 			return schema.NullValue(), fmt.Errorf("cannot convert %T to string", raw)
 		}
 	case schema.TypeDate:
-		s, ok := raw.(string)
-		if !ok || s == "" {
-			return schema.NullValue(), nil
-		}
-		days, err := schema.ParseDate(s)
-		if err != nil {
-			return schema.NullValue(), err
-		}
-		return schema.Date(days), nil
+		return parseDateValue(raw)
 	case schema.TypeTimestamp:
-		s, ok := raw.(string)
-		if !ok || s == "" {
-			return schema.NullValue(), nil
-		}
-		tm, err := parseAnyTime(s)
-		if err != nil {
-			return schema.NullValue(), err
-		}
-		return schema.Timestamp(schema.MicrosFromTime(tm)), nil
+		return parseTimestampValue(raw)
 	case schema.TypeFloat64:
 		f, ok := raw.(float64)
 		if !ok {

@@ -1,0 +1,1 @@
+{"id":"stock_basic-20260927T020154-0000","dataset":"stock_basic","operation":"import","source":"relay-b:stock_basic","created_at":"2026-09-27T02:01:54.8851748Z","rows":5903,"files":[{"path":"part-0001.parquet","rows":5903}]}

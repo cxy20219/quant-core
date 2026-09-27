@@ -69,7 +69,7 @@ func TestImportSnapshotWithSlices(t *testing.T) {
 	src := &fakeSource{
 		name: "fake",
 		results: map[string]*source.Result{
-			"stock_basic|list_status=L,exchange=SSE": {
+			"stock_basic|list_status=L": {
 				Fields: fields,
 				Items: [][]any{
 					stockBasicRow("600000.SH", "浦发银行", "L"),
@@ -77,12 +77,12 @@ func TestImportSnapshotWithSlices(t *testing.T) {
 				},
 				Count: 2, Limit: 10000,
 			},
-			"stock_basic|list_status=L,exchange=SZSE": {
+			"stock_basic|list_status=D": {
 				Fields: fields,
 				Items:  [][]any{stockBasicRow("000001.SZ", "平安银行", "L")},
 				Count:  1, Limit: 10000,
 			},
-			"stock_basic|list_status=D,exchange=SSE": {
+			"stock_basic|list_status=P": {
 				Fields: fields,
 				Items:  [][]any{stockBasicRow("600002.SH", "退市股", "D")},
 				Count:  1, Limit: 10000,
@@ -118,7 +118,7 @@ func TestImportSnapshotWithSlices(t *testing.T) {
 	if len(seen) != 4 || seen["600002.SH"] != "D" {
 		t.Fatalf("rows = %v", seen)
 	}
-	if len(src.calls) != 9 { // 3 list_status × 3 exchange
+	if len(src.calls) != 3 { // 3 个 list_status 切片
 		t.Fatalf("calls = %d: %v", len(src.calls), src.calls)
 	}
 }
@@ -222,6 +222,52 @@ func TestImportDateRange(t *testing.T) {
 	}
 	if count != 2 {
 		t.Fatalf("want 2 rows scanned, got %d", count)
+	}
+}
+
+func TestConvertSourceValueNumericDates(t *testing.T) {
+	// stock_basic 的 list_date 在部分中转站是数字(19991110),index_basic 是字符串;
+	// 两种都必须正确解析,不能静默置空。
+	cases := []struct {
+		name   string
+		raw    any
+		expect string // FormatDate 结果,空串表示应为 null
+	}{
+		{"numeric date", float64(19991110), "19991110"},
+		{"string date", "19991110", "19991110"},
+		{"string date dashed", "1999-11-10", "19991110"},
+		{"zero numeric", float64(0), ""},
+		{"empty string", "", ""},
+		{"nil", nil, ""},
+	}
+	for _, tc := range cases {
+		v, err := convertSourceValue(tc.raw, schema.TypeDate)
+		if err != nil {
+			t.Errorf("%s: unexpected error %v", tc.name, err)
+			continue
+		}
+		if tc.expect == "" {
+			if !v.IsNull() {
+				t.Errorf("%s: want null, got %+v", tc.name, v)
+			}
+			continue
+		}
+		if v.IsNull() {
+			t.Errorf("%s: got null, want %s", tc.name, tc.expect)
+			continue
+		}
+		if got := schema.FormatDate(v.I); got != tc.expect {
+			t.Errorf("%s: got %s, want %s", tc.name, got, tc.expect)
+		}
+	}
+
+	// 时间戳同理:数字 YYYYMMDDHHMMSS 与字符串都要支持
+	ts, err := convertSourceValue(float64(20240102093000), schema.TypeTimestamp)
+	if err != nil {
+		t.Fatalf("timestamp numeric: %v", err)
+	}
+	if got := schema.FormatTimestamp(ts.I); got != "2024-01-02 09:30:00" {
+		t.Errorf("timestamp numeric: got %s", got)
 	}
 }
 

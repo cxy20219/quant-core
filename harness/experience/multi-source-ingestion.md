@@ -44,8 +44,31 @@
 1. `quantd source list` — 确认源状态与 bindings;
 2. `quantd source compare --dataset <x> --param ...` — 行数/字段/首末行一致性;
 3. 小窗口试导 + `quantd verify` — 账目与行数;
-4. 关键不变量校验(交易日历覆盖率、单日股票数、单位);
+4. 关键不变量校验(交易日历覆盖率、单日股票数、单位、日期字段非空率);
 5. 更换 bindings 后重跑全窗口,`dedupe --reconcile` 修账。
+
+## 实测的第三类问题:B 站对过滤参数不可靠
+
+同一批 `stock_basic` 切片(3 状态 × 3 交易所 = 9 次调用)实测返回:
+
+```
+slice=L/SSE  rows=5546   ← 返回了全表(L 全部 5533 行),未按 exchange 过滤
+slice=L/SZSE rows=2902   ← 子集
+slice=D/BSE  rows=5      ← probe 样例(被 probe 检测拦截?没有;样例无 meta.probe 时无法识别)
+slice=D/SZSE rows=6081   ← 全表(含所有状态)
+slice=P/SSE  rows=5546
+```
+
+即:**过滤条件被部分忽略、probe 样例混入、子集返回**三种情况同时出现,
+且 `count` 与行数一致,无法从元数据识别。
+
+对策(已落地):
+- 快照导入**按主键去重**(`importSnapshot` 内建 seen 集合),把"重复"挡掉;
+- 切片**不要过细**(stock_basic 改为按 list_status 3 片整表拉取,减少静默缺失概率);
+- 完整性靠**跨源对照**:`quantd source compare --dataset stock_basic --param list_status=L`
+  与源的全表计数核对(实测 5533 一致;BSE 335 只只有整表拉取才拿得到,细分切片会丢);
+- 字段类型不可信:stock_basic 的 `list_date` 是**数字**,index_basic 的同名字段是**字符串**
+  → 日期解析必须两种都接受(已修,见 `parseDateValue`),否则会静默置空(实测 5533 行全空)。
 
 ## 边界
 

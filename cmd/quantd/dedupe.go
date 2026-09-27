@@ -100,7 +100,7 @@ func cmdDedupe(args []string) {
 		seen := make(map[string]bool, len(rows))
 		kept := make([][]schema.Value, 0, len(rows))
 		for _, row := range rows {
-			key := primaryKeyString(row, keyIdx)
+			key := schema.PrimaryKeyString(row, keyIdx)
 			if seen[key] {
 				continue
 			}

@@ -1,7 +1,8 @@
-﻿package schema
+package schema
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -48,6 +49,41 @@ func (v Value) Float64() (float64, bool) {
 	default:
 		return 0, false
 	}
+}
+
+// PrimaryKeyIndexes 返回数据集主键字段在 Fields 中的下标。
+func (d *Dataset) PrimaryKeyIndexes() []int {
+	out := make([]int, 0, len(d.PrimaryKey))
+	for _, name := range d.PrimaryKey {
+		if idx, ok := d.index[name]; ok {
+			out = append(out, idx)
+		}
+	}
+	return out
+}
+
+// PrimaryKeyString 把一行的主键值拼成字符串键(用于去重与幂等检查)。
+func PrimaryKeyString(row []Value, idx []int) string {
+	var sb strings.Builder
+	for i, j := range idx {
+		if i > 0 {
+			sb.WriteByte('|')
+		}
+		v := row[j]
+		switch v.Kind {
+		case KindString:
+			sb.WriteString(v.S)
+		case KindDate, KindTimestamp, KindInt:
+			fmt.Fprintf(&sb, "%d", v.I)
+		case KindFloat:
+			fmt.Fprintf(&sb, "%g", v.F)
+		case KindBool:
+			fmt.Fprintf(&sb, "%v", v.B)
+		default:
+			sb.WriteString("~")
+		}
+	}
+	return sb.String()
 }
 
 // Compare 比较同类型值,返回 -1/0/1。类型不同时报错。

@@ -115,10 +115,10 @@ func DefaultAPIs() map[string]*API {
 	}
 }
 
-// basicFilter 是 ts_code/market/list_status/name 的过滤(基础信息类接口)。
+// basicFilter 是 ts_code/exchange/market/list_status/name 的过滤(基础信息类接口)。
 func basicFilter(ds *schema.Dataset, params Params) (*query.Filter, error) {
 	var preds []query.Predicate
-	for _, key := range []string{"ts_code", "market", "list_status", "name"} {
+	for _, key := range []string{"ts_code", "exchange", "market", "list_status", "name"} {
 		v := params.Str(key)
 		if v == "" {
 			continue

@@ -250,6 +250,52 @@ func TestParseDateTimeParamFormats(t *testing.T) {
 	}
 }
 
+func TestStockBasicExchangeFilter(t *testing.T) {
+	reg, err := schema.Load(filepath.Join("..", "..", "schemas", "datasets.yaml"))
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	l := lake.New(t.TempDir(), reg)
+	ds, _ := reg.Get("stock_basic")
+
+	write := func(code, exchange string) {
+		dir := l.Dir(ds)
+		pw, err := lake.NewPartWriter(ds, dir)
+		if err != nil {
+			t.Fatalf("writer: %v", err)
+		}
+		row := make([]schema.Value, len(ds.Fields))
+		for i := range row {
+			row[i] = schema.NullValue()
+		}
+		set := func(name string, v schema.Value) {
+			i, _ := ds.FieldIndex(name)
+			row[i] = v
+		}
+		set("ts_code", schema.Str(code))
+		set("exchange", schema.Str(exchange))
+		set("list_status", schema.Str("L"))
+		if err := pw.WriteRow(row); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		if _, err := pw.Close(); err != nil {
+			t.Fatalf("close: %v", err)
+		}
+	}
+	write("600000.SH", "SSE")
+	write("000001.SZ", "SZSE")
+
+	srv := NewServer(l)
+	resp := post(t, srv, `{"api_name":"stock_basic","params":{"exchange":"SSE","list_status":"L"},"fields":"ts_code,exchange"}`)
+	items := resp["data"].(map[string]any)["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("exchange filter failed: got %d rows (%v)", len(items), resp)
+	}
+	if got := items[0].([]any)[1].(string); got != "SSE" {
+		t.Errorf("exchange = %v, want SSE", got)
+	}
+}
+
 func TestUnknownAPIFails(t *testing.T) {
 	srv := NewServer(setupLake(t))
 	resp := post(t, srv, `{"api_name":"not_exists","params":{}}`)
