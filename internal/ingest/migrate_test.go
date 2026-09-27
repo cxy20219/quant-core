@@ -166,7 +166,7 @@ func TestMigrateOldLake(t *testing.T) {
 	defer cur.Close()
 	var got [][]schema.Value
 	for cur.Next() {
-		got = append(got, cur.Row())
+		got = append(got, append([]schema.Value(nil), cur.Row()...))
 	}
 	if err := cur.Err(); err != nil {
 		t.Fatalf("scan err: %v", err)

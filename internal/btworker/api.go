@@ -56,28 +56,39 @@ func (w *Worker) BeforeTradingStart() error {
 
 // HandleData 触发 handle_data。
 func (w *Worker) HandleData(snapshot map[string]btengine.BarSnapshot) error {
-	bars := make(map[string]map[string]any, len(snapshot))
-	clock := w.host.clockText()
-	for code, bar := range snapshot {
-		// 与 quantbt 一致:dt/open/close/price/low/high/volume/money(成交额)
-		bars[w.host.display(code)] = map[string]any{
-			"dt":     clock,
-			"open":   bar.Open,
-			"close":  bar.Close,
-			"price":  bar.Close,
-			"low":    bar.Low,
-			"high":   bar.High,
-			"volume": bar.Volume,
-			"money":  nanToNil(bar.Amount),
+	// 列式载荷:字段数组只出现一次,策略侧按需构建 bar 对象(大股票池下显著减少 JSON 体积与解析)
+	codes := make([]string, 0, len(snapshot))
+	open := make([]float64, 0, len(snapshot))
+	high := make([]float64, 0, len(snapshot))
+	low := make([]float64, 0, len(snapshot))
+	closePx := make([]float64, 0, len(snapshot))
+	volume := make([]float64, 0, len(snapshot))
+	money := make([]any, 0, len(snapshot))
+	for _, sec := range w.host.getUniverse() {
+		bar, ok := snapshot[sec]
+		if !ok {
+			continue
 		}
+		codes = append(codes, w.host.display(sec))
+		open = append(open, bar.Open)
+		high = append(high, bar.High)
+		low = append(low, bar.Low)
+		closePx = append(closePx, bar.Close)
+		volume = append(volume, bar.Volume)
+		money = append(money, nanToNil(bar.Amount))
 	}
+	// 股票池之外的证券不会出现在快照中(引擎按股票池构建),无需兜底
 	if err := w.send(&message{
 		Type:        "bar",
 		Day:         w.host.clockText(),
 		Time:        w.host.clockHM(),
 		PreviousDay: w.host.previousDayString(),
-		Bars:        bars,
-		Portfolio:   w.host.portfolioJSON(),
+		Codes:       codes,
+		Series: map[string]any{
+			"open": open, "high": high, "low": low, "close": closePx,
+			"price": closePx, "volume": volume, "money": money,
+		},
+		Portfolio: w.host.portfolioJSON(),
 	}); err != nil {
 		return err
 	}

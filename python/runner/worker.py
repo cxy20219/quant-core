@@ -423,6 +423,63 @@ class Position(PTradeObject):
         })
 
 
+class BarDict:
+    """当分钟/日线行情:与 quantbt 的 BarDict 表面一致([] / in / 迭代),
+    列式载荷按需构建单个 bar(大股票池下避免每分钟构造全部对象)。"""
+
+    __slots__ = ("_index", "_series", "_dt", "_cache")
+
+    def __init__(self, codes, series, dt):
+        self._index = {code: i for i, code in enumerate(codes or [])}
+        self._series = series or {}
+        self._dt = dt
+        self._cache = {}
+
+    def __getitem__(self, security):
+        cached = self._cache.get(security)
+        if cached is not None:
+            return cached
+        idx = self._index[security]  # 缺失时 KeyError(与 quantbt 一致)
+        series = self._series
+        bar = AttrDict({
+            "dt": self._dt,
+            "open": float(series["open"][idx]),
+            "close": float(series["close"][idx]),
+            "price": float(series["price"][idx]),
+            "low": float(series["low"][idx]),
+            "high": float(series["high"][idx]),
+            "volume": float(series["volume"][idx]),
+            "money": _nan_or_float(series["money"][idx]),
+        })
+        self._cache[security] = bar
+        return bar
+
+    def __contains__(self, security):
+        return security in self._index
+
+    def __iter__(self):
+        return iter(self._index)
+
+    def __len__(self):
+        return len(self._index)
+
+    def keys(self):
+        return self._index.keys()
+
+    def items(self):
+        for code in self._index:
+            yield code, self[code]
+
+    def values(self):
+        for code in self._index:
+            yield self[code]
+
+
+def _nan_or_float(value):
+    """列式载荷中 money 可能为 null(停牌),还原为 NaN。"""
+    return float("nan") if value is None else float(value)
+
+
 def _bar_record(bar):
     """行情切片:dt 解析为 datetime,数值转 float,缺失值还原为 NaN(与 quantbt 的 bar 一致)。"""
     numeric = {"open", "close", "price", "low", "high", "volume", "money"}
@@ -637,7 +694,8 @@ def main() -> int:
                 context["blotter"]["current_dt"] = _parse_dt(msg.get("day"))
                 context["previous_date"] = _parse_date(msg.get("previous_day"))
                 context["portfolio"] = _portfolio_snapshot(msg.get("portfolio"))
-                bars = {code: _bar_record(bar) for code, bar in (msg.get("bars") or {}).items()}
+                bars = BarDict(msg.get("codes") or [], msg.get("series") or {},
+                               _parse_dt(msg.get("day")))
                 runner.handle_data(context, bars)
                 _send({"type": "done"})
             elif mtype == "phase":

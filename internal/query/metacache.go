@@ -174,16 +174,26 @@ func statsMayMatch(stats colStats, p Predicate, ft schema.FieldType) bool {
 		v := pq.ToParquet(p.Value, ft)
 		return pq.CompareValues(lo, v) <= 0 && pq.CompareValues(v, hi) <= 0
 	case OpIn:
-		values := make([]parquet.Value, 0, len(p.Values))
-		for _, v := range p.Values {
-			values = append(values, pq.ToParquet(v, ft))
-		}
-		sortParquetValues(values)
+		values := p.inStatsValues(ft)
 		i := searchParquetValues(values, hi)
 		return i > 0 && pq.CompareValues(values[i-1], lo) >= 0
 	default:
 		return true
 	}
+}
+
+// inStatsValues 返回 IN 取值的物理值(按物理类型转换并排序,首次构建后缓存)。
+func (p *Predicate) inStatsValues(ft schema.FieldType) []parquet.Value {
+	if p.inStatsOK && p.inStatsType == ft {
+		return p.inStats
+	}
+	values := make([]parquet.Value, 0, len(p.Values))
+	for _, v := range p.Values {
+		values = append(values, pq.ToParquet(v, ft))
+	}
+	sortParquetValues(values)
+	p.inStats, p.inStatsType, p.inStatsOK = values, ft, true
+	return values
 }
 
 func sortParquetValues(values []parquet.Value) {

@@ -89,7 +89,10 @@ type message struct {
 	StrategySrc string                    `json:"strategy_source,omitempty"`
 	Meta        map[string]any            `json:"meta,omitempty"`
 	Bars        map[string]map[string]any `json:"bars,omitempty"`
-	Portfolio   map[string]any            `json:"portfolio,omitempty"`
+	// Codes/Series 是列式行情载荷(字段数组只出现一次,策略侧按需构建 bar 对象)
+	Codes     []string       `json:"codes,omitempty"`
+	Series    map[string]any `json:"series,omitempty"`
+	Portfolio map[string]any `json:"portfolio,omitempty"`
 }
 
 func (w *Worker) send(msg *message) error {

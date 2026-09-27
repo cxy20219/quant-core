@@ -1,17 +1,21 @@
 package query
 
-import "quant-core/internal/schema"
+import (
+	"github.com/parquet-go/parquet-go"
+
+	"quant-core/internal/schema"
+)
 
 // Op 是谓词操作符。
 type Op uint8
 
 const (
-	OpEq Op = iota // 等于
-	OpIn           // 属于集合
-	OpGte          // 大于等于
-	OpLte          // 小于等于
-	OpGt           // 大于
-	OpLt           // 小于
+	OpEq  Op = iota // 等于
+	OpIn            // 属于集合
+	OpGte           // 大于等于
+	OpLte           // 小于等于
+	OpGt            // 大于
+	OpLt            // 小于
 )
 
 // Predicate 是单字段上的过滤条件。Field 是数据集字段索引。
@@ -20,6 +24,41 @@ type Predicate struct {
 	Op     Op
 	Value  schema.Value   // OpEq/OpGte/OpLte/OpGt/OpLt
 	Values []schema.Value // OpIn
+
+	// IN 的取值索引(首次匹配时惰性构建;谓词按查询构造,单游标使用)
+	inSet map[string]struct{}
+	inInt map[int64]struct{}
+	inFlt map[float64]struct{}
+	// IN 的物理值缓存(行组统计剪枝用,按物理类型转换并排序)
+	inStats     []parquet.Value
+	inStatsType schema.FieldType
+	inStatsOK   bool
+}
+
+// buildInIndex 构建 IN 取值索引:把逐行线性比较(股票池大时 O(N))降为哈希查找。
+func (p *Predicate) buildInIndex() {
+	if p.inSet != nil || p.inInt != nil || p.inFlt != nil {
+		return
+	}
+	for _, x := range p.Values {
+		switch x.Kind {
+		case schema.KindString:
+			if p.inSet == nil {
+				p.inSet = make(map[string]struct{}, len(p.Values))
+			}
+			p.inSet[x.S] = struct{}{}
+		case schema.KindFloat:
+			if p.inFlt == nil {
+				p.inFlt = make(map[float64]struct{}, len(p.Values))
+			}
+			p.inFlt[x.F] = struct{}{}
+		default: // Int/Date/Timestamp
+			if p.inInt == nil {
+				p.inInt = make(map[int64]struct{}, len(p.Values))
+			}
+			p.inInt[x.I] = struct{}{}
+		}
+	}
 }
 
 // Filter 是谓词的合取(AND)。
@@ -82,12 +121,18 @@ func (p *Predicate) matchAt(row []schema.Value, pos int) bool {
 		c, err := schema.Compare(v, p.Value)
 		return err == nil && c == 0
 	case OpIn:
-		for _, x := range p.Values {
-			if c, err := schema.Compare(v, x); err == nil && c == 0 {
-				return true
-			}
+		p.buildInIndex()
+		switch v.Kind {
+		case schema.KindString:
+			_, ok := p.inSet[v.S]
+			return ok
+		case schema.KindFloat:
+			_, ok := p.inFlt[v.F]
+			return ok
+		default:
+			_, ok := p.inInt[v.I]
+			return ok
 		}
-		return false
 	case OpGte:
 		c, err := schema.Compare(v, p.Value)
 		return err == nil && c >= 0
@@ -104,4 +149,3 @@ func (p *Predicate) matchAt(row []schema.Value, pos int) bool {
 		return false
 	}
 }
-

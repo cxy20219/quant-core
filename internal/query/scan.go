@@ -86,6 +86,8 @@ type Cursor struct {
 	bufPos int
 
 	row     []schema.Value
+	rowBuf  []schema.Value // convertRow 复用缓冲
+	outBuf  []schema.Value // Row() 复用缓冲
 	limit   int
 	offset  int
 	emitted int
@@ -213,14 +215,19 @@ func (c *Cursor) Next() bool {
 }
 
 // Row 返回当前行,长度为请求的输出列数。
+// 返回的切片复用内部缓冲:仅在下一次 Next/Row 调用前有效,调用方需自行拷贝保留。
 func (c *Cursor) Row() []schema.Value {
 	if c.row == nil {
 		return nil
 	}
-	out := make([]schema.Value, len(c.columns))
+	if cap(c.outBuf) < len(c.columns) {
+		c.outBuf = make([]schema.Value, len(c.columns))
+	}
+	out := c.outBuf[:len(c.columns)]
 	for i, ci := range c.columns {
 		out[i] = c.row[c.readPos[ci]]
 	}
+	c.outBuf = out
 	return out
 }
 
@@ -419,9 +426,15 @@ func (c *Cursor) buildProjection(fileSchema *parquet.Schema) error {
 // convertRow 把 parquet 行转为逻辑值行。
 //
 // parquet.Row 对 optional 列可能省略 null 值,因此按 Value.Column() 定位,
-// 未出现的列保持 null。
+// 未出现的列保持 null。返回的切片复用内部缓冲,在下一次 Next/Row 调用前有效。
 func (c *Cursor) convertRow(prow parquet.Row) ([]schema.Value, error) {
-	row := make([]schema.Value, len(c.readCols))
+	if cap(c.rowBuf) < len(c.readCols) {
+		c.rowBuf = make([]schema.Value, len(c.readCols))
+	}
+	row := c.rowBuf[:len(c.readCols)]
+	for i := range row {
+		row[i] = schema.NullValue()
+	}
 	for _, pv := range prow {
 		col := int(pv.Column())
 		if col < 0 || col >= len(c.readCols) {
@@ -434,6 +447,7 @@ func (c *Cursor) convertRow(prow parquet.Row) ([]schema.Value, error) {
 		}
 		row[col] = v
 	}
+	c.rowBuf = row
 	return row, nil
 }
 
@@ -610,11 +624,7 @@ func (p Predicate) statsMayMatch(idx parquet.ColumnIndex, ft schema.FieldType) b
 		v := pq.ToParquet(p.Value, ft)
 		return pq.CompareValues(lo, v) <= 0 && pq.CompareValues(v, hi) <= 0
 	case OpIn:
-		values := make([]parquet.Value, 0, len(p.Values))
-		for _, v := range p.Values {
-			values = append(values, pq.ToParquet(v, ft))
-		}
-		sort.Slice(values, func(i, j int) bool { return pq.CompareValues(values[i], values[j]) < 0 })
+		values := p.inStatsValues(ft)
 		i := sort.Search(len(values), func(i int) bool { return pq.CompareValues(values[i], hi) > 0 })
 		return i > 0 && pq.CompareValues(values[i-1], lo) >= 0
 	default:

@@ -89,7 +89,7 @@ func collect(t *testing.T, sc *Scanner, req Request) ([][]schema.Value, Stats) {
 	defer cur.Close()
 	var rows [][]schema.Value
 	for cur.Next() {
-		rows = append(rows, cur.Row())
+		rows = append(rows, append([]schema.Value(nil), cur.Row()...))
 	}
 	if err := cur.Err(); err != nil {
 		t.Fatalf("scan error: %v", err)
