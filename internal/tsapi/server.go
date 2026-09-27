@@ -41,6 +41,8 @@ type API struct {
 	// DefaultLimit 是未指定 limit 时的行数上限,MaxLimit 是单次请求上限。
 	DefaultLimit int
 	MaxLimit     int
+	// Params 是该接口支持的请求参数(仅用于文档生成)。
+	Params []APIParam
 }
 
 // Transform 定义字段级单位换算:输出值 = 原值 × Scale。
@@ -159,11 +161,11 @@ func (s *Server) HealthHandler() http.Handler {
 }
 
 type apiRequest struct {
-	APIName string          `json:"api_name"`
-	Token   string          `json:"token"`
-	Params  map[string]any  `json:"params"`
-	Fields  string          `json:"fields"`
-	rawGet  map[string]any  // GET 形式的平铺参数
+	APIName string         `json:"api_name"`
+	Token   string         `json:"token"`
+	Params  map[string]any `json:"params"`
+	Fields  string         `json:"fields"`
+	rawGet  map[string]any // GET 形式的平铺参数
 }
 
 type apiResponse struct {

@@ -170,6 +170,9 @@ func cmdServe(args []string) {
 
 	mux := http.NewServeMux()
 	mux.Handle("/healthz", server.HealthHandler())
+	mux.Handle("/docs", server.DocsHandler())
+	mux.Handle("/docs/", server.DocsHandler())
+	mux.Handle("/docs/openapi.json", server.OpenAPIHandler())
 	mux.Handle("/api/backtests", btServer.Handler())
 	mux.Handle("/api/backtests/", btServer.Handler())
 	mux.Handle("/", server.Handler())

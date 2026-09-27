@@ -9,6 +9,63 @@ import (
 	"quant-core/internal/schema"
 )
 
+// APIParam 描述数据接口支持的一个请求参数(用于 /docs 与 OpenAPI 生成)。
+type APIParam struct {
+	Name string
+	Type string // string / int / date / datetime
+	Desc string
+}
+
+// 通用参数(所有数据接口)
+var commonParams = []APIParam{
+	{Name: "limit", Type: "int", Desc: "返回行数上限(未指定用接口默认值,超过单次上限会被截断为上限)"},
+	{Name: "offset", Type: "int", Desc: "跳过前 N 行(分页)"},
+	{Name: "fields", Type: "string", Desc: "逗号分隔的输出字段;缺省返回接口默认字段集"},
+	{Name: "token", Type: "string", Desc: "访问令牌(服务启用鉴权时必填,放在请求体或查询串)"},
+}
+
+var codeDateParams = []APIParam{
+	{Name: "ts_code", Type: "string", Desc: "证券代码,支持逗号分隔(如 600000.SH,000001.SZ)"},
+	{Name: "trade_date", Type: "date", Desc: "单个交易日 YYYYMMDD"},
+	{Name: "start_date", Type: "date", Desc: "起始交易日 YYYYMMDD(含)"},
+	{Name: "end_date", Type: "date", Desc: "结束交易日 YYYYMMDD(含)"},
+}
+
+var minsParams = []APIParam{
+	{Name: "ts_code", Type: "string", Desc: "证券代码,支持逗号分隔"},
+	{Name: "freq", Type: "string", Desc: "频率,当前仅支持 1min"},
+	{Name: "start_date", Type: "datetime", Desc: "起始时刻 YYYY-MM-DD HH:MM:SS(含)"},
+	{Name: "end_date", Type: "datetime", Desc: "结束时刻 YYYY-MM-DD HH:MM:SS(含)"},
+}
+
+var basicParams = []APIParam{
+	{Name: "ts_code", Type: "string", Desc: "证券代码,支持逗号分隔"},
+	{Name: "exchange", Type: "string", Desc: "交易所 SSE/SZSE/BSE"},
+	{Name: "market", Type: "string", Desc: "市场类别(主板/创业板/科创板/CDR/北交所)"},
+	{Name: "list_status", Type: "string", Desc: "上市状态 L 上市 / D 退市 / P 暂停"},
+	{Name: "name", Type: "string", Desc: "名称(精确匹配)"},
+}
+
+var calendarParams = []APIParam{
+	{Name: "exchange", Type: "string", Desc: "交易所 SSE/SZSE(默认 SSE)"},
+	{Name: "start_date", Type: "date", Desc: "起始日期 YYYYMMDD(含)"},
+	{Name: "end_date", Type: "date", Desc: "结束日期 YYYYMMDD(含)"},
+}
+
+var namechangeParams = []APIParam{
+	{Name: "ts_code", Type: "string", Desc: "证券代码,支持逗号分隔"},
+	{Name: "start_date", Type: "date", Desc: "起始日期 YYYYMMDD(含)"},
+	{Name: "end_date", Type: "date", Desc: "结束日期 YYYYMMDD(含)"},
+}
+
+// paramsFor 拼接接口专属参数与通用参数(返回新切片,避免共享底层数组)。
+func paramsFor(specific []APIParam) []APIParam {
+	out := make([]APIParam, 0, len(specific)+len(commonParams))
+	out = append(out, specific...)
+	out = append(out, commonParams...)
+	return out
+}
+
 // DefaultAPIs 返回内置的 tushare 兼容接口表。
 func DefaultAPIs() map[string]*API {
 	return map[string]*API{
@@ -16,6 +73,7 @@ func DefaultAPIs() map[string]*API {
 			Name:         "daily",
 			Dataset:      "bars_daily",
 			BuildFilter:  codeDateFilter,
+			Params:       paramsFor(codeDateParams),
 			SelectFields: []string{"ts_code", "trade_date", "open", "high", "low", "close", "pre_close", "change", "pct_chg", "vol", "amount"},
 			DefaultLimit: 6000,
 			MaxLimit:     10000,
@@ -24,6 +82,7 @@ func DefaultAPIs() map[string]*API {
 			Name:        "daily_basic",
 			Dataset:     "bars_daily",
 			BuildFilter: codeDateFilter,
+			Params:      paramsFor(codeDateParams),
 			SelectFields: []string{
 				"ts_code", "trade_date", "close", "turnover_rate", "turnover_rate_f", "volume_ratio",
 				"pe", "pe_ttm", "pb", "ps", "ps_ttm", "dv_ratio", "dv_ttm",
@@ -36,6 +95,7 @@ func DefaultAPIs() map[string]*API {
 			Name:         "adj_factor",
 			Dataset:      "adj_factor",
 			BuildFilter:  codeDateFilter,
+			Params:       paramsFor(codeDateParams),
 			SelectFields: []string{"ts_code", "trade_date", "adj_factor"},
 			// 默认只取后复权因子(tushare adj_factor 语义);可传 factor_type=qfq 取前复权。
 			FixedPartitions: map[string]string{"factor_type": "hfq"},
@@ -47,6 +107,7 @@ func DefaultAPIs() map[string]*API {
 			Name:         "stk_mins",
 			Dataset:      "bars_1m",
 			BuildFilter:  minsFilter,
+			Params:       paramsFor(minsParams),
 			SelectFields: []string{"ts_code", "trade_time", "open", "high", "low", "close", "vol", "amount"},
 			// tushare stk_mins:vol 单位为股、amount 单位为元;内部存储为 手/千元。
 			Transforms: []Transform{
@@ -60,6 +121,7 @@ func DefaultAPIs() map[string]*API {
 			Name:         "stock_basic",
 			Dataset:      "stock_basic",
 			BuildFilter:  basicFilter,
+			Params:       paramsFor(basicParams),
 			SelectFields: []string{"ts_code", "symbol", "name", "area", "industry", "market", "list_status", "list_date", "delist_date", "is_hs", "exchange", "fullname", "enname", "cnspell", "curr_type", "act_name", "act_ent_type"},
 			DefaultLimit: 6000,
 			MaxLimit:     10000,
@@ -68,6 +130,7 @@ func DefaultAPIs() map[string]*API {
 			Name:         "trade_cal",
 			Dataset:      "trade_cal",
 			BuildFilter:  calendarFilter,
+			Params:       paramsFor(calendarParams),
 			SelectFields: []string{"exchange", "cal_date", "is_open", "pretrade_date"},
 			DefaultLimit: 10000,
 			MaxLimit:     20000,
@@ -76,6 +139,7 @@ func DefaultAPIs() map[string]*API {
 			Name:         "stk_limit",
 			Dataset:      "stk_limit",
 			BuildFilter:  codeDateFilter,
+			Params:       paramsFor(codeDateParams),
 			SelectFields: []string{"ts_code", "trade_date", "pre_close", "up_limit", "down_limit"},
 			DefaultLimit: 6000,
 			MaxLimit:     10000,
@@ -84,6 +148,7 @@ func DefaultAPIs() map[string]*API {
 			Name:         "suspend_d",
 			Dataset:      "suspend_d",
 			BuildFilter:  codeDateFilter,
+			Params:       paramsFor(codeDateParams),
 			SelectFields: []string{"ts_code", "trade_date", "suspend_timing", "suspend_type"},
 			DefaultLimit: 6000,
 			MaxLimit:     10000,
@@ -92,6 +157,7 @@ func DefaultAPIs() map[string]*API {
 			Name:         "namechange",
 			Dataset:      "namechange",
 			BuildFilter:  namechangeFilter,
+			Params:       paramsFor(namechangeParams),
 			SelectFields: []string{"ts_code", "name", "start_date", "end_date", "ann_date", "change_reason"},
 			DefaultLimit: 6000,
 			MaxLimit:     10000,
@@ -100,6 +166,7 @@ func DefaultAPIs() map[string]*API {
 			Name:         "index_daily",
 			Dataset:      "index_daily",
 			BuildFilter:  codeDateFilter,
+			Params:       paramsFor(codeDateParams),
 			SelectFields: []string{"ts_code", "trade_date", "close", "open", "high", "low", "pre_close", "change", "pct_chg", "vol", "amount"},
 			DefaultLimit: 6000,
 			MaxLimit:     10000,
@@ -108,6 +175,7 @@ func DefaultAPIs() map[string]*API {
 			Name:         "index_basic",
 			Dataset:      "index_basic",
 			BuildFilter:  basicFilter,
+			Params:       paramsFor(basicParams),
 			SelectFields: []string{"ts_code", "name", "fullname", "market", "publisher", "index_type", "category", "base_date", "base_point", "list_date"},
 			DefaultLimit: 6000,
 			MaxLimit:     10000,

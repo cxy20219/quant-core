@@ -8,7 +8,9 @@
 - **回测服务**:提交 PTrade 兼容的 Python 策略与超参数,Go 引擎执行(日线 MVP),
   返回净值/委托/成交/日志/指标。`POST /api/backtests` 提交,`GET /api/backtests/{id}` 查询。
 - **数据湖**:规范化 Parquet 数据集(注册表驱动),批次 manifest 血缘,行组统计剪枝。
-- **数据服务**:tushare 兼容 HTTP API(`POST /` + `api_name`),可被 tushare SDK 直接调用。
+- **数据服务**:tushare 兼容 HTTP API(`POST /` + `api_name`),可被 tushare SDK 直接调用;
+  **在线接口文档**:`GET /docs`(由接口表+数据集注册表自动生成,含参数/字段/单位/示例),
+  `GET /docs/openapi.json`(OpenAPI 3.0,可导入 Postman/Swagger)。
 - **多源接入**:数据源是配置驱动的插件(`sources.yaml`):装载/卸载/换源不重编译;
   内置 `tushare-http`(官方与中转站通用)与 `exec`(任意语言外部插件);
   同一数据集可配置多源降级链,按调用自动切换。

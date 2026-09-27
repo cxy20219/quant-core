@@ -82,6 +82,12 @@ POST 策略+参数 → 作业队列 → { Go 引擎 ⇄ Python 策略子进程 }
    python examples/use_backtest_service.py http://<nas-host>:8000
    ```
 
+## 在线文档
+
+- 服务内置接口文档页:`GET /docs`(数据接口参数/字段/单位/示例 + 回测接口 + 策略 API),
+  由接口表(`internal/tsapi/apis.go`)与数据集注册表(`schemas/datasets.yaml`)自动生成;
+- `GET /docs/openapi.json` 为 OpenAPI 3.0 规范(导入 Postman/Swagger UI 即可调用)。
+
 ## 策略接口(PTrade 子集)
 
 - 生命周期:`initialize(context)` / `before_trading_start(context, data)` /
