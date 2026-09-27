@@ -12,6 +12,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -24,6 +25,9 @@ import (
 
 	"github.com/parquet-go/parquet-go"
 
+	"quant-core/internal/btengine"
+	"quant-core/internal/btserver"
+	"quant-core/internal/btworker"
 	"quant-core/internal/ingest"
 	"quant-core/internal/lake"
 	"quant-core/internal/schema"
@@ -47,6 +51,8 @@ func main() {
 		cmdImport(os.Args[2:])
 	case "source":
 		cmdSource(os.Args[2:])
+	case "backtest":
+		cmdBacktest(os.Args[2:])
 	case "dedupe":
 		cmdDedupe(os.Args[2:])
 	case "verify":
@@ -128,6 +134,10 @@ func cmdServe(args []string) {
 	registryPath := fs.String("registry", filepath.Join("schemas", "datasets.yaml"), "数据集注册表")
 	listen := fs.String("listen", ":8000", "监听地址")
 	tokens := fs.String("tokens", os.Getenv("QUANTD_TOKENS"), "逗号分隔的访问令牌(默认读 QUANTD_TOKENS)")
+	recordsDir := fs.String("records", "", "回测记录目录(默认 <lake>/../backtests)")
+	pythonBin := fs.String("python", os.Getenv("QUANT_PYTHON"), "Python 解释器(默认 python3/python)")
+	workerScript := fs.String("worker-script", "", "策略 worker.py 路径(默认自动定位)")
+	maxConcurrent := fs.Int("max-backtests", 2, "并发回测数上限")
 	_ = fs.Parse(args)
 
 	reg := loadRegistry(*registryPath)
@@ -143,13 +153,120 @@ func cmdServe(args []string) {
 		log.Printf("token authentication enabled (%d token(s))", len(server.Tokens))
 	}
 
+	if *recordsDir == "" {
+		*recordsDir = filepath.Join(filepath.Dir(*lakeDir), "backtests")
+	}
+	btServer := btserver.NewServer(l, btserver.Config{
+		MaxConcurrent: *maxConcurrent,
+		RecordsDir:    *recordsDir,
+		PythonBinary:  *pythonBin,
+		WorkerScript:  *workerScript,
+	})
+	btServer.Logf = log.Printf
+	btServer.LoadRecords()
+
 	handler := http.NewServeMux()
 	handler.Handle("/healthz", server.HealthHandler())
+	handler.Handle("/api/backtests", btServer.Handler())
+	handler.Handle("/api/backtests/", btServer.Handler())
 	handler.Handle("/", server.Handler())
-	log.Printf("quantd serving on %s lake=%s registry=%s", *listen, *lakeDir, *registryPath)
+	log.Printf("quantd serving on %s lake=%s registry=%s records=%s", *listen, *lakeDir, *registryPath, *recordsDir)
 	if err := http.ListenAndServe(*listen, handler); err != nil {
 		log.Fatalf("serve: %v", err)
 	}
+}
+
+// cmdBacktest 本地执行一次回测(不经过 HTTP)。
+func cmdBacktest(args []string) {
+	fs := flag.NewFlagSet("backtest", flag.ExitOnError)
+	strategyPath := fs.String("strategy", "", "策略文件路径(必需)")
+	paramsJSON := fs.String("params", "{}", "策略参数 JSON")
+	start := fs.String("start", "", "开始日期 YYYYMMDD(必需)")
+	end := fs.String("end", "", "结束日期 YYYYMMDD(必需)")
+	capital := fs.Float64("capital", 1_000_000, "初始资金")
+	benchmark := fs.String("benchmark", "", "基准代码(如 000300.SH)")
+	warmup := fs.Int("warmup", 365, "预热自然日数")
+	lakeDir := fs.String("lake", "lake", "数据湖根目录")
+	registryPath := fs.String("registry", filepath.Join("schemas", "datasets.yaml"), "数据集注册表")
+	outPath := fs.String("out", "", "结果输出 JSON 路径(可选)")
+	pythonBin := fs.String("python", os.Getenv("QUANT_PYTHON"), "Python 解释器")
+	workerScript := fs.String("worker-script", "", "策略 worker.py 路径")
+	_ = fs.Parse(args)
+
+	if *strategyPath == "" || *start == "" || *end == "" {
+		fs.Usage()
+		os.Exit(2)
+	}
+	source, err := os.ReadFile(*strategyPath)
+	if err != nil {
+		log.Fatalf("读取策略: %v", err)
+	}
+	params := map[string]any{}
+	if strings.TrimSpace(*paramsJSON) != "" {
+		if err := json.Unmarshal([]byte(*paramsJSON), &params); err != nil {
+			log.Fatalf("解析 --params: %v", err)
+		}
+	}
+	startDays, err := schema.ParseDate(*start)
+	if err != nil {
+		log.Fatalf("start: %v", err)
+	}
+	endDays, err := schema.ParseDate(*end)
+	if err != nil {
+		log.Fatalf("end: %v", err)
+	}
+
+	reg := loadRegistry(*registryPath)
+	l := lake.New(*lakeDir, reg)
+	cfg := btengine.Config{
+		StrategyName: filepath.Base(*strategyPath),
+		StartDate:    schema.TimeFromDays(startDays),
+		EndDate:      schema.TimeFromDays(endDays),
+		Frequency:    "1d",
+		CapitalBase:  *capital,
+		Benchmark:    *benchmark,
+		WarmupDays:   *warmup,
+		Params:       params,
+	}
+	worker := btworker.New(btworker.Config{
+		PythonBinary:   *pythonBin,
+		WorkerScript:   *workerScript,
+		StrategySource: string(source),
+	})
+	engine := btengine.NewEngine(l, cfg)
+	result, err := engine.Run(worker)
+	if err != nil {
+		log.Fatalf("回测失败: %v", err)
+	}
+	summary := result.Summary
+	log.Printf("回测完成: %s ~ %s", result.StartDate, result.EndDate)
+	log.Printf("初始资金 %.0f → 期末 %.0f(收益 %.2f%%)",
+		summary.InitialValue, summary.FinalValue, summary.TotalReturn*100)
+	log.Printf("委托 %d 笔,成交 %d 笔,用时 %.1fs",
+		summary.OrderCount, summary.TradeCount, summary.ElapsedSecond)
+	if result.Analytics != nil {
+		log.Printf("年化 %.2f%% 夏普 %.2f 最大回撤 %.2f%%",
+			toFloat(result.Analytics["annualized_return"])*100,
+			toFloat(result.Analytics["sharpe_ratio"]),
+			toFloat(result.Analytics["max_drawdown"])*100)
+	}
+	if *outPath != "" {
+		raw, err := json.MarshalIndent(result, "", "  ")
+		if err != nil {
+			log.Fatalf("序列化结果: %v", err)
+		}
+		if err := os.WriteFile(*outPath, raw, 0o644); err != nil {
+			log.Fatalf("写入结果: %v", err)
+		}
+		log.Printf("结果已写入 %s", *outPath)
+	}
+}
+
+func toFloat(v any) float64 {
+	if f, ok := v.(float64); ok {
+		return f
+	}
+	return 0
 }
 
 func cmdMigrate(args []string) {

@@ -5,6 +5,8 @@
 
 ## 定位
 
+- **回测服务**:提交 PTrade 兼容的 Python 策略与超参数,Go 引擎执行(日线 MVP),
+  返回净值/委托/成交/日志/指标。`POST /api/backtests` 提交,`GET /api/backtests/{id}` 查询。
 - **数据湖**:规范化 Parquet 数据集(注册表驱动),批次 manifest 血缘,行组统计剪枝。
 - **数据服务**:tushare 兼容 HTTP API(`POST /` + `api_name`),可被 tushare SDK 直接调用。
 - **多源接入**:数据源是配置驱动的插件(`sources.yaml`):装载/卸载/换源不重编译;
@@ -14,7 +16,7 @@
 
 ## 目录
 
-- `cmd/quantd/`:主程序(serve / migrate / verify / apis)。
+- `cmd/quantd/`:主程序(serve / backtest / migrate / import / source / dedupe / verify / apis)。
 - `internal/schema/`:数据集注册表与值类型(单一权威)。
 - `internal/lake/`:数据湖布局、part 写入器、批次 manifest。
 - `internal/pq/`:注册表与 parquet-go 的桥接(列编码、值转换)。
@@ -30,8 +32,11 @@
 go build -o bin/quantd.exe ./cmd/quantd
 go test ./internal/... -timeout 300s
 
-# 本地服务
+# 本地服务(数据 + 回测)
 .\bin\quantd.exe serve --lake D:\quant-lake --listen 127.0.0.1:8000
+
+# 本地跑一次回测(调试用)
+.\bin\quantd.exe backtest --strategy examples\strategies\dual_ma.py --start 20240101 --end 20241231 --lake D:\quant-lake --params '{"fast":5,"slow":20,"symbols":["600000.SH"]}'
 
 # 从旧湖(quant-data/quant-store)迁移
 .\bin\quantd.exe migrate --src E:\AI-work\quant-data\quant-store\lake --lake D:\quant-lake --jobs 8

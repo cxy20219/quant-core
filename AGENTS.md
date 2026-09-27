@@ -2,6 +2,7 @@
 # 文档索引，按需查阅
 
 - [Harness 开发指南](harness/harness.md)：项目总览、关键约束、常用入口和注意事项
+- [回测服务流程](harness/workflow/backtest-service.md)：提交 Python 策略+参数、结果结构、撮合语义与验证基准
 - [NAS 部署流程](harness/workflow/deploy-nas.md)：交叉编译、镜像构建、数据上传、容器验收与回滚
 - [数据湖迁移流程](harness/workflow/data-lake-migration.md)：旧湖盘点、源文件归一化、迁移、逐分区对账
 - [数据源插件与导入流程](harness/workflow/tushare-data-import.md)：sources.yaml 装载/卸载/换源、导入、续传、去重与对账

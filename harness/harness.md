@@ -30,6 +30,10 @@
 - `internal/query/`:纯 Go 扫描引擎(分区剪枝 → 行组跳过 → 列投影 → 元数据缓存)。
 - `internal/tsapi/`:tushare 兼容协议层(api_name 注册表、参数→谓词、单位换算)。
 - `internal/ingest/`:旧湖迁移与数据源导入器(断点续传/截断检测/窗口重试)。
+- `internal/btengine/`:Go 回测引擎(日线时钟/账户/撮合/费用/指标)。
+- `internal/btworker/`:Python 策略子进程与 stdio JSON-RPC 协议。
+- `internal/btserver/`:回测作业队列与 REST API。
+- `python/runner/worker.py`:策略执行器(PTrade 子集 API,薄适配)。
 - `schemas/datasets.yaml`:数据集注册表。
 - `sources.yaml`:数据源插件注册表(装载/卸载/绑定与降级链)。
 - `deploy/`:Dockerfile(二进制版/容器内构建版)、compose、部署说明。
@@ -42,11 +46,13 @@
 - 本地服务:`go run ./cmd/quantd serve --lake D:\quant-lake --listen 127.0.0.1:8000`
 - 数据湖自校验:`go run ./cmd/quantd verify --lake D:\quant-lake`
 - 数据源管理:`go run ./cmd/quantd source list|check|call|compare`
+- 本地回测:`go run ./cmd/quantd backtest --strategy examples/strategies/dual_ma.py --start 20240101 --end 20241231 --lake D:\quant-lake --params '{...}'`
 - 数据导入:`go run ./cmd/quantd import --dataset stock_basic --lake D:\quant-lake`
 - 扫描诊断:`go run ./tools/lakediag --lake D:\quant-lake --dataset bars_daily --filter ts_code=600000.SH --start 20240101 --end 20241231`
 - 部署到 NAS:`harness/workflow/deploy-nas.md`
 - 迁移旧湖:`harness/workflow/data-lake-migration.md`
 - 数据源与导入:`harness/workflow/tushare-data-import.md`
+- 回测服务:`harness/workflow/backtest-service.md`
 
 ## 环境
 

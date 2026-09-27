@@ -1,8 +1,14 @@
-# quant-core 数据服务 docker compose 定义。
+# quant-core 数据服务 + 回测服务 docker compose 定义。
 #
 # 部署位置:/vol1/quant-core/compose.yaml
-# 数据外挂:  /vol1/quant-core/data  -> 容器内 /data (数据湖,不打包进镜像)
+# 数据外挂:  /vol1/quant-core/data  -> 容器内 /data (数据湖 + 回测记录,不打包进镜像)
 # 配置外挂:  /vol1/quant-core/etc   -> 容器内 /etc/quant-core (注册表与令牌)
+#
+# 接口:
+#   POST /                     tushare 兼容数据接口(api_name/params/fields)
+#   POST /api/backtests        提交回测(策略代码 + 参数 + 区间)
+#   GET  /api/backtests/{id}   查询回测状态与结果
+#   GET  /healthz              健康检查(数据 + 服务状态)
 #
 # 常用命令:
 #   docker compose up -d
@@ -17,25 +23,28 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      # 数据湖外挂;容器只读挂载,导入操作在宿主机执行(quantd migrate/import)
+      # 数据湖与回测记录外挂;容器只读挂载数据湖,导入在宿主机执行
       - /vol1/quant-core/data:/data
       # 注册表覆盖(如维护自定义数据集);文件不存在时回退镜像内置注册表
       - /vol1/quant-core/etc:/etc/quant-core:ro
     environment:
       - TZ=Asia/Shanghai
+      - PYTHONIOENCODING=utf-8
+      - PYTHONUTF8=1
       # 非空时开启 token 鉴权,逗号分隔;留空则匿名可访问(仅限可信内网)
       - QUANTD_TOKENS=${QUANTD_TOKENS:-}
     command:
       - serve
       - --lake=/data/lake
       - --registry=/etc/quant-core/datasets.yaml
+      - --records=/data/backtests
       - --listen=:8000
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8000/healthz"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 5s
+      start_period: 10s
     logging:
       driver: json-file
       options:
