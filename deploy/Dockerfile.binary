@@ -15,7 +15,8 @@ FROM alpine:3.21 AS base
 RUN apk add --no-cache ca-certificates tzdata python3 py3-numpy py3-pandas
 ENV TZ=Asia/Shanghai \
     PYTHONIOENCODING=utf-8 \
-    PYTHONUTF8=1
+    PYTHONUTF8=1 \
+    GOGC=50
 WORKDIR /app
 COPY bin/quantd-linux-amd64 /app/quantd
 COPY schemas/ /app/schemas/

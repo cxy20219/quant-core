@@ -518,7 +518,14 @@ func (e *Engine) runMinute(host *Host) error {
 	if warmupDays < 2 {
 		warmupDays = 2
 	}
-	e.Minute = NewMinutePortal(e.Lake, host.Universe, warmupDays)
+	e.Minute = NewMinutePortal(e.Lake, host.Universe, warmupDays, e.Config.MinuteMaxRows)
+	if days := e.Minute.effectiveWindowDays(); e.Minute.Clamped() {
+		e.Logs = append(e.Logs, LogRecord{
+			Level: "WARNING",
+			Message: fmt.Sprintf("分钟窗口按内存上限收缩为 %d 个交易日(股票池 %d 只,上限 %d Bar)",
+				days, len(host.Universe), e.Minute.maxRows),
+		})
+	}
 	e.Minute.SetPrevCloseProvider(e.Portal.CloseAt)
 	e.Minute.SetCalendar(e.Portal.TradingDaysInRange)
 	minutes := e.Minute.TradingMinutes(e.days)

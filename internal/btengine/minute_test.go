@@ -16,7 +16,7 @@ func TestMinutePortalLoad(t *testing.T) {
 	}
 	l := lake.New(`D:\quant-lake`, reg)
 	day, _ := schema.ParseDate("20200102")
-	p := NewMinutePortal(l, []string{"600570.SH"}, 5)
+	p := NewMinutePortal(l, []string{"600570.SH"}, 5, 0)
 	if err := p.EnsureDay(day); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}

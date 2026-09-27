@@ -80,15 +80,16 @@ type JobSummary struct {
 
 // BacktestRequest 是提交回测的请求体。
 type BacktestRequest struct {
-	StrategyCode string         `json:"strategy_code"`
-	StrategyName string         `json:"strategy_name"`
-	Params       map[string]any `json:"params"`
-	StartDate    string         `json:"start_date"`
-	EndDate      string         `json:"end_date"`
-	CapitalBase  float64        `json:"capital_base"`
-	Benchmark    string         `json:"benchmark"`
-	Frequency    string         `json:"frequency"`
-	WarmupDays   int            `json:"warmup_days"`
+	StrategyCode  string         `json:"strategy_code"`
+	StrategyName  string         `json:"strategy_name"`
+	Params        map[string]any `json:"params"`
+	StartDate     string         `json:"start_date"`
+	EndDate       string         `json:"end_date"`
+	CapitalBase   float64        `json:"capital_base"`
+	Benchmark     string         `json:"benchmark"`
+	Frequency     string         `json:"frequency"`
+	MinuteMaxRows int            `json:"minute_max_rows"`
+	WarmupDays    int            `json:"warmup_days"`
 }
 
 // NewServer 创建回测服务。
@@ -230,10 +231,11 @@ func (s *Server) run(job *Job) {
 		EndDate:      schema.TimeFromDays(endDays),
 		Frequency:    freq,
 
-		CapitalBase: req.CapitalBase,
-		Benchmark:   strings.TrimSpace(req.Benchmark),
-		WarmupDays:  warmupDays,
-		Params:      job.Params,
+		CapitalBase:   req.CapitalBase,
+		Benchmark:     strings.TrimSpace(req.Benchmark),
+		WarmupDays:    warmupDays,
+		MinuteMaxRows: req.MinuteMaxRows,
+		Params:        job.Params,
 	}
 
 	worker := btworker.New(btworker.Config{

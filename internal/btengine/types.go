@@ -20,7 +20,9 @@ type Config struct {
 	CapitalBase  float64
 	Benchmark    string
 	WarmupDays   int
-	Params       map[string]any
+	// MinuteMaxRows 是分钟窗口 Bar 总数上限(<=0 用 DefaultMinuteMaxRows)
+	MinuteMaxRows int
+	Params        map[string]any
 }
 
 // Commission 是费用参数(与 quantbt 的 Commission 对齐)。

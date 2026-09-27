@@ -64,15 +64,26 @@ type MinutePortal struct {
 	bars       map[string][]MinuteBar
 	loaded     []int64
 	windowDays int
-	prevClose  func(sec string, day int64) float64
-	calendar   func(lo, hi int64) []int64
-	mu         sync.Mutex
+	// maxRows 是窗口内分钟 Bar 总数的上限(按池大小自动收缩窗口,防止大池长窗口吃爆内存)。
+	maxRows int
+	// clamped 记录窗口是否被上限收缩(用于日志提示)。
+	clamped   bool
+	prevClose func(sec string, day int64) float64
+	calendar  func(lo, hi int64) []int64
+	mu        sync.Mutex
 }
 
-// NewMinutePortal 创建分钟数据门户。windowDays 是保留的交易日窗口(含预热)。
-func NewMinutePortal(l *lake.Lake, securities []string, windowDays int) *MinutePortal {
+// DefaultMinuteMaxRows 是分钟窗口 Bar 总数的默认上限(约 170MB 原始 Bar 数据)。
+const DefaultMinuteMaxRows = 3_000_000
+
+// NewMinutePortal 创建分钟数据门户。windowDays 是保留的交易日窗口(含预热);
+// maxRows>0 时按池大小自动收缩窗口(每只每日 240 Bar)。
+func NewMinutePortal(l *lake.Lake, securities []string, windowDays, maxRows int) *MinutePortal {
 	if windowDays < 2 {
 		windowDays = 2
+	}
+	if maxRows <= 0 {
+		maxRows = DefaultMinuteMaxRows
 	}
 	return &MinutePortal{
 		lake:       l,
@@ -80,14 +91,45 @@ func NewMinutePortal(l *lake.Lake, securities []string, windowDays int) *MinuteP
 		securities: append([]string(nil), securities...),
 		bars:       map[string][]MinuteBar{},
 		windowDays: windowDays,
+		maxRows:    maxRows,
 	}
 }
+
+// effectiveWindowDays 返回按 maxRows 收缩后的窗口天数(至少 1 天)。
+func (p *MinutePortal) effectiveWindowDays() int {
+	days := p.windowDays
+	if p.maxRows > 0 && len(p.securities) > 0 {
+		perDay := len(p.securities) * len(minuteSlots)
+		if perDay > 0 {
+			byRows := p.maxRows / perDay
+			if byRows < 1 {
+				byRows = 1
+			}
+			if byRows < days {
+				days = byRows
+				p.clamped = true
+			}
+		}
+	}
+	if days < 1 {
+		days = 1
+	}
+	return days
+}
+
+// Clamped 返回窗口是否因内存上限被收缩(供调用方提示)。
+func (p *MinutePortal) Clamped() bool { return p.clamped }
 
 // SetSecurities 更新股票池(策略动态切换时调用),已加载数据保留。
 func (p *MinutePortal) SetSecurities(securities []string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.securities = append([]string(nil), securities...)
+	// 池变大时窗口可能被上限收缩:立即按新窗口裁剪已加载数据
+	if len(p.loaded) > p.effectiveWindowDays() {
+		cut := p.loaded[len(p.loaded)-p.effectiveWindowDays()]
+		p.trimBefore(cut)
+	}
 }
 
 // SetPrevCloseProvider 注入"最近有效日收盘价"查询(窗口内完全没有分钟数据的停牌证券使用)。
@@ -111,9 +153,10 @@ func (p *MinutePortal) EnsureDay(day int64) error {
 	if len(p.loaded) > 0 && p.loaded[len(p.loaded)-1] >= day {
 		return nil
 	}
+	window := int64(p.effectiveWindowDays())
 	lo := day
 	if len(p.loaded) == 0 {
-		lo = day - int64(p.windowDays) + 1
+		lo = day - window + 1
 	} else {
 		lo = p.loaded[len(p.loaded)-1] + 1
 	}
@@ -172,20 +215,32 @@ func (p *MinutePortal) loadRange(lo, hi int64) error {
 	for sec, bars := range p.bars {
 		p.bars[sec] = p.fillSuspensions(sec, bars)
 	}
-	if len(p.loaded) > p.windowDays {
-		cut := p.loaded[len(p.loaded)-p.windowDays]
-		for sec, bars := range p.bars {
-			keep := bars[:0]
-			for _, bar := range bars {
-				if bar.Micros >= cut*86400*1_000_000 {
-					keep = append(keep, bar)
-				}
-			}
-			p.bars[sec] = keep
-		}
-		p.loaded = p.loaded[len(p.loaded)-p.windowDays:]
+	window := p.effectiveWindowDays()
+	if len(p.loaded) > window {
+		cut := p.loaded[len(p.loaded)-window]
+		p.trimBefore(cut)
 	}
 	return nil
+}
+
+// trimBefore 丢弃 cut 日之前的所有分钟 Bar,并把窗口列表裁到同一位置。
+func (p *MinutePortal) trimBefore(cut int64) {
+	cutMicros := cut * 86400 * 1_000_000
+	for sec, bars := range p.bars {
+		keep := bars[:0]
+		for _, bar := range bars {
+			if bar.Micros >= cutMicros {
+				keep = append(keep, bar)
+			}
+		}
+		p.bars[sec] = keep
+	}
+	for i, d := range p.loaded {
+		if d >= cut {
+			p.loaded = p.loaded[i:]
+			break
+		}
+	}
 }
 
 // BarAt 返回指定时刻的分钟 Bar(精确匹配)。
@@ -351,7 +406,21 @@ func (p *MinutePortal) fillSuspensions(sec string, bars []MinuteBar) []MinuteBar
 			return bars
 		}
 	}
-	out := make([]MinuteBar, 0, len(bars))
+	// 预分配精确容量:窗口内 [start,end] 的分钟数(避免 append 反复扩容)
+	capacity := 0
+	for _, day := range p.loaded {
+		base := day * 86400
+		for _, slot := range minuteSlots {
+			micros := (base + int64(slot)) * 1_000_000
+			if micros >= start && micros <= end {
+				capacity++
+			}
+		}
+	}
+	if capacity < len(bars) {
+		capacity = len(bars)
+	}
+	out := make([]MinuteBar, 0, capacity)
 	i := 0
 	for _, day := range p.loaded {
 		base := day * 86400

@@ -185,6 +185,7 @@ func cmdBacktest(args []string) {
 	end := fs.String("end", "", "结束日期 YYYYMMDD(必需)")
 	capital := fs.Float64("capital", 1_000_000, "初始资金")
 	frequency := fs.String("frequency", "1d", "回测频率: 1d / 1m")
+	minuteMaxRows := fs.Int("minute-max-rows", 0, "分钟窗口 Bar 总数上限(<=0 用默认 300 万;按池大小自动收缩窗口)")
 	benchmark := fs.String("benchmark", "", "基准代码(如 000300.SH)")
 	warmup := fs.Int("warmup", 365, "预热自然日数")
 	lakeDir := fs.String("lake", "lake", "数据湖根目录")
@@ -220,14 +221,15 @@ func cmdBacktest(args []string) {
 	reg := loadRegistry(*registryPath)
 	l := lake.New(*lakeDir, reg)
 	cfg := btengine.Config{
-		StrategyName: filepath.Base(*strategyPath),
-		StartDate:    schema.TimeFromDays(startDays),
-		EndDate:      schema.TimeFromDays(endDays),
-		Frequency:    *frequency,
-		CapitalBase:  *capital,
-		Benchmark:    *benchmark,
-		WarmupDays:   *warmup,
-		Params:       params,
+		StrategyName:  filepath.Base(*strategyPath),
+		StartDate:     schema.TimeFromDays(startDays),
+		EndDate:       schema.TimeFromDays(endDays),
+		Frequency:     *frequency,
+		MinuteMaxRows: *minuteMaxRows,
+		CapitalBase:   *capital,
+		Benchmark:     *benchmark,
+		WarmupDays:    *warmup,
+		Params:        params,
 	}
 	worker := btworker.New(btworker.Config{
 		PythonBinary:   *pythonBin,

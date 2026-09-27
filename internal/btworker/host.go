@@ -60,12 +60,17 @@ func (v *hostView) getUniverse() []string { return v.host.Universe }
 func (v *hostView) setUniverse(raw []string) {
 	internal := make([]string, 0, len(raw))
 	v.rawCodes = make(map[string]string, len(raw))
+	seen := make(map[string]struct{}, len(raw))
 	for _, code := range raw {
 		code = strings.ToUpper(strings.TrimSpace(code))
 		if code == "" {
 			continue
 		}
 		key := toInternalCode(code)
+		if _, dup := seen[key]; dup {
+			continue // 与 quantbt 的 normalize_universe 一致:去重且保留首次出现顺序
+		}
+		seen[key] = struct{}{}
 		internal = append(internal, key)
 		v.rawCodes[key] = code
 	}

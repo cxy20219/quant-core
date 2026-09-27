@@ -31,6 +31,8 @@ services:
       - TZ=Asia/Shanghai
       - PYTHONIOENCODING=utf-8
       - PYTHONUTF8=1
+      # 回测引擎 GC 目标(50 时大股票池分钟回测内存约减半,速度不变)
+      - GOGC=${GOGC:-50}
       # 非空时开启 token 鉴权,逗号分隔;留空则匿名可访问(仅限可信内网)
       - QUANTD_TOKENS=${QUANTD_TOKENS:-}
     command:
