@@ -208,6 +208,57 @@ def get_stock_exrights(stock_code, date=None):
     return frame
 
 
+def get_fundamentals(security, table, fields=None, date=None, start_year=None, end_year=None,
+                     report_types=None, date_type=None, merge_type=None):
+    """估值表(与 quantbt 一致:仅支持 date 模式的 table="valuation")。"""
+    if any(value is not None for value in (start_year, end_year, report_types, date_type, merge_type)):
+        raise RuntimeError("本地估值数据仅支持 get_fundamentals 的 date 模式")
+    if table != "valuation":
+        raise RuntimeError('本地数据仅支持 get_fundamentals(..., "valuation", ...)')
+    requested = [fields] if isinstance(fields, str) else list(fields or [])
+    mapping = {
+        "total_value": ("total_mv", 10000.0),
+        "float_value": ("circ_mv", 10000.0),
+        "total_shares": ("total_share", 10000.0),
+        "a_shares": ("total_share", 10000.0),
+        "a_floats": ("float_share", 10000.0),
+        "pe_dynamic": ("pe", 1.0),
+        "pe_static": ("pe", 1.0),
+        "pe_ttm": ("pe_ttm", 1.0),
+        "pb": ("pb", 1.0),
+        "ps": ("ps", 1.0),
+        "ps_ttm": ("ps_ttm", 1.0),
+        "turnover_rate": ("turnover_rate", 1.0),
+        "dividend_ratio": ("dv_ttm", 1.0),
+    }
+    unknown = sorted(set(requested) - set(mapping))
+    if unknown:
+        raise RuntimeError("不支持的估值字段: {}".format(unknown))
+    query_date = date
+    if query_date is None:
+        current_dt = _context["blotter"]["current_dt"] if _context else None
+        query_date = current_dt.strftime("%Y-%m-%d") if current_dt is not None else None
+    rows = _rpc.call("get_fundamentals", securities=_as_list(security), table=table,
+                     fields=requested, date=query_date)
+    wanted = list(dict.fromkeys(["total_value", *requested]))
+    columns = ["trading_day", "total_value", *[f for f in requested if f != "total_value"]]
+    if pd is None:
+        return {"rows": rows or [], "columns": columns}
+    if not rows:
+        return pd.DataFrame(columns=columns, index=pd.Index([], name="secu_code"))
+    index = pd.Index([row["code"] for row in rows], name="secu_code")
+    result = pd.DataFrame(index=index)
+    result["trading_day"] = [row["trading_day"] for row in rows]
+    for field in wanted:
+        source, multiplier = mapping[field]
+        values = [float(row.get(source) or 0.0) * multiplier for row in rows]
+        if field in ("turnover_rate", "dividend_ratio"):
+            result[field] = ["{:.6f}%".format(value) for value in values]
+        else:
+            result[field] = values
+    return result.loc[:, columns]
+
+
 def set_universe(security_list):
     return _rpc.call("set_universe", securities=_as_list(security_list))
 
@@ -486,6 +537,7 @@ class Runner:
             "get_position": get_position, "get_positions": get_positions,
             "get_history": get_history, "get_price": get_price,
             "get_stock_exrights": get_stock_exrights,
+            "get_fundamentals": get_fundamentals,
             "set_universe": set_universe, "set_benchmark": set_benchmark,
             "set_commission": set_commission, "set_slippage": set_slippage,
             "set_fixed_slippage": set_fixed_slippage,

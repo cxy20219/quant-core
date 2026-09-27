@@ -262,6 +262,75 @@ func (p *DataPortal) Exrights(sec string) []CorporateAction {
 	return out
 }
 
+// FundamentalsRow 是单只证券在某交易日的估值字段(原始单位,与 bars_daily 一致)。
+type FundamentalsRow struct {
+	Security     string
+	TradeDate    int64
+	TurnoverRate float64
+	Pe           float64
+	PeTTM        float64
+	Pb           float64
+	Ps           float64
+	PsTTM        float64
+	DvTTM        float64
+	TotalShare   float64
+	FloatShare   float64
+	FreeShare    float64
+	TotalMV      float64
+	CircMV       float64
+}
+
+// Fundamentals 查询指定交易日的估值字段(与 quantbt 的 fundamentals(table="valuation") 对应)。
+func (p *DataPortal) Fundamentals(securities []string, day int64) ([]FundamentalsRow, error) {
+	if len(securities) == 0 {
+		return nil, nil
+	}
+	ds, err := p.lake.Registry.Get("bars_daily")
+	if err != nil {
+		return nil, err
+	}
+	codeIdx, _ := ds.FieldIndex("ts_code")
+	dateIdx, _ := ds.FieldIndex("trade_date")
+	cur, err := p.scanner.Open(query.Request{
+		Dataset: "bars_daily",
+		Columns: []string{"ts_code", "trade_date", "turnover_rate", "pe", "pe_ttm", "pb", "ps", "ps_ttm",
+			"dv_ttm", "total_share", "float_share", "free_share", "total_mv", "circ_mv"},
+		Filter: &query.Filter{Preds: []query.Predicate{
+			query.In(codeIdx, toValues(securities)...),
+			query.Eq(dateIdx, schema.Date(day)),
+		}},
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close()
+	out := make([]FundamentalsRow, 0, len(securities))
+	for cur.Next() {
+		row := cur.Row()
+		out = append(out, FundamentalsRow{
+			Security:     row[0].S,
+			TradeDate:    row[1].I,
+			TurnoverRate: num(row[2]),
+			Pe:           num(row[3]),
+			PeTTM:        num(row[4]),
+			Pb:           num(row[5]),
+			Ps:           num(row[6]),
+			PsTTM:        num(row[7]),
+			DvTTM:        num(row[8]),
+			TotalShare:   num(row[9]),
+			FloatShare:   num(row[10]),
+			FreeShare:    num(row[11]),
+			TotalMV:      num(row[12]),
+			CircMV:       num(row[13]),
+		})
+	}
+	if err := cur.Err(); err != nil {
+		return nil, err
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Security < out[j].Security })
+	return out, nil
+}
+
 func toValues(codes []string) []schema.Value {
 	out := make([]schema.Value, 0, len(codes))
 	for _, c := range codes {

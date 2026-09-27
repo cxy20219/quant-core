@@ -185,6 +185,8 @@ func (w *Worker) dispatch(method string, raw json.RawMessage) (any, error) {
 		return w.rpcSetting(method, raw)
 	case "get_stock_exrights":
 		return w.rpcStockExrights(raw)
+	case "get_fundamentals":
+		return w.rpcFundamentals(raw)
 	default:
 		return nil, fmt.Errorf("不支持的策略 API: %s", method)
 	}
@@ -731,6 +733,59 @@ func (w *Worker) rpcStockExrights(raw json.RawMessage) (any, error) {
 		})
 	}
 	return map[string]any{"dates": dates, "fields": fields, "rows": out}, nil
+}
+
+// rpcFundamentals 估值表查询(与 quantbt 的 fundamentals 一致,仅 table="valuation")。
+// 返回原始字段值,PTrade 字段映射与百分比格式化在策略侧完成。
+func (w *Worker) rpcFundamentals(raw json.RawMessage) (any, error) {
+	var p struct {
+		Securities []string        `json:"securities"`
+		Table      string          `json:"table"`
+		Fields     []string        `json:"fields"`
+		Date       json.RawMessage `json:"date"`
+	}
+	if raw != nil {
+		_ = json.Unmarshal(raw, &p)
+	}
+	if p.Table != "" && p.Table != "valuation" {
+		return nil, fmt.Errorf("get_fundamentals: 本地数据仅支持 table=\"valuation\"")
+	}
+	internal := make([]string, 0, len(p.Securities))
+	for _, s := range p.Securities {
+		internal = append(internal, toInternalCode(s))
+	}
+	day := w.host.currentDay
+	if text := rawDateString(p.Date); text != "" {
+		parsed, err := schema.ParseDate(text)
+		if err != nil {
+			return nil, fmt.Errorf("get_fundamentals: date %q 无效", text)
+		}
+		day = parsed
+	}
+	rows, err := w.host.host.Engine.Portal.Fundamentals(internal, day)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, map[string]any{
+			"code":          w.host.display(row.Security),
+			"trading_day":   schema.FormatDateISO(row.TradeDate),
+			"turnover_rate": row.TurnoverRate,
+			"pe":            row.Pe,
+			"pe_ttm":        row.PeTTM,
+			"pb":            row.Pb,
+			"ps":            row.Ps,
+			"ps_ttm":        row.PsTTM,
+			"dv_ttm":        row.DvTTM,
+			"total_share":   row.TotalShare,
+			"float_share":   row.FloatShare,
+			"free_share":    row.FreeShare,
+			"total_mv":      row.TotalMV,
+			"circ_mv":       row.CircMV,
+		})
+	}
+	return out, nil
 }
 
 // rawDateString 把 JSON 原始值(字符串或数字)转为日期文本。

@@ -62,11 +62,13 @@ Go 回测引擎修改后,验证其与参照实现 quantbt(PTrade 兼容,已由 5
 ## 验证
 
 - 成功信号:`PASS: 净值/委托/成交逐项一致`;批量模式输出
-  `8 个探针, 8 通过, 0 失败`(日线)或 `19 个用例, 19 通过, 0 失败`(分钟)。
+  `9 个探针, 9 通过, 0 失败`(日线)/ `19 个用例, 19 通过, 0 失败`(分钟)/
+  `12 个用例, 12 通过, 0 失败`(公司行动)。
 - 失败信号:输出首个差异(如 `净值[3] 2020-01-07 不同: quantbt=... go=...`),
   按 `harness/experience/bt-semantics-parity.md` 的语义清单排查。
 - 已覆盖(日线):P01 市价买卖 / P02 限价挂单与撤单 / P03 T+1 / P04 目标单取整 /
-  P05 资金与成交量上限 / P06 费用滑点变体 / P07 多标的组合 / P08 生命周期与 run_daily。
+  P05 资金与成交量上限 / P06 费用滑点变体 / P07 多标的组合 / P08 生命周期与 run_daily /
+  P09 估值表 get_fundamentals(单标的/多标的/空结果)。
 - 已覆盖(公司行动,12 用例):分红+送转入账 / 日线生命周期 / 红利税(含边界、
   持有满一年、结算日)/ 零股送转取整 / 跨标的公司行动现金 / 多笔配股现金 /
   配股 / 配股现金不足 / 候选事件扫描(get_stock_exrights 全量)。
@@ -79,7 +81,8 @@ Go 回测引擎修改后,验证其与参照实现 quantbt(PTrade 兼容,已由 5
 
 ## 边界与未覆盖
 
-- `get_fundamentals`(估值表)未实现;`tick_data`/`on_order_response` 等未实现。
+- `get_fundamentals` 仅支持 `table="valuation"` 的 date 模式(与 quantbt 一致),
+  财报类表(table="income"/"balance" 等)不支持;`tick_data`/`on_order_response` 等未实现。
 - `ptrade_alignment_mixed_corporate_action_candidates.py` 依赖 PTrade 的
   `get_Ashares`(quantbt 亦不提供),无法对拍,已排除在用例集外。
 - 分钟模式为按交易日滚动窗口加载(默认 30 天),超长区间/大股票池的内存与速度优化未做。

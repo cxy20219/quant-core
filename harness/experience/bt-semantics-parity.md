@@ -96,6 +96,21 @@
    指定日期无事件返回 `None`,未指定日期返回**空表**(不是 None);日期参数兼容字符串与整数。
    数据按证券**全量**加载(不限回测区间),否则候选扫描类探针计数会少。
 
+## 估值表语义(2026-09-27 补齐)
+
+1. **仅 `table="valuation"` + date 模式**:传 `start_year/end_year/report_types/date_type/merge_type`
+   直接报错(与 quantbt 一致);`date=None` 时取当前交易日。
+2. **字段映射与单位**(PTrade 字段 → bars_daily 源字段 × 倍数):
+   `total_value→total_mv×1e4`、`float_value→circ_mv×1e4`、`total_shares/a_shares→total_share×1e4`、
+   `a_floats→float_share×1e4`、`pe_dynamic/pe_static→pe`、`pe_ttm/pb/ps/ps_ttm` 原值、
+   `turnover_rate→turnover_rate`、`dividend_ratio→dv_ttm`。
+3. **返回结构**:DataFrame,index 为策略原始代码(index name=`secu_code`),
+   列固定为 `["trading_day", "total_value", ...请求字段]`(total_value 恒在,重复请求去重);
+   `trading_day` 是 `YYYY-MM-DD` 字符串。
+4. **百分比字段**:`turnover_rate`/`dividend_ratio` 返回 `"{:.6f}%"` 字符串(不是数值);
+   其余字段是数值。多标的时按代码升序。
+5. **空结果**:查询日无数据(非交易日/未上市)返回**空表**且列结构完整(不是 None、不报错)。
+
 ## 代码规范(策略侧)
 
 - 策略侧看到的代码**保留其原始写法**(策略写 `.SS` 就显示 `.SS`,写 `.SH` 就显示 `.SH`);
@@ -119,7 +134,7 @@
 
 ## 边界
 
-- `get_fundamentals`(估值表)未实现;
+- `get_fundamentals` 仅支持 valuation 表的 date 模式(财报类表不支持);
 - 分钟数据按交易日滚动窗口加载(默认 30 天),超长区间/大股票池未做内存与速度优化;
 - 分钟停牌填充的 `money` 为 NaN,若策略直接比较 NaN 需自行处理(与 PTrade 一致)。
 
