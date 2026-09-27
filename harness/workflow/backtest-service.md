@@ -24,6 +24,9 @@ POST 策略+参数 → 作业队列 → { Go 引擎 ⇄ Python 策略子进程 }
 - 本地运行时需要 Python 3.10+ 与 pandas(可用 `--python` 指定解释器);
 - 数据湖覆盖回测区间 + 预热期(bars_daily/adj_factor;分钟模式还需 bars_1m,
   预热按交易日数计,默认 30 天)。
+- 容器内 numpy/pandas 版本与开发机不同(NAS numpy 2.1.3 / 本地 1.26.4):
+  数值结果一致,但用 `%r` 直接格式化 numpy 标量时文本会带 `np.float64(...)` 前缀;
+  策略日志请用显式格式(如 `{:.4f}`),避免依赖 numpy 的 repr。
 
 ## 关键步骤
 
