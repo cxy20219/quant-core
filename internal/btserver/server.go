@@ -218,6 +218,10 @@ func (s *Server) run(job *Job) {
 	if freq == "" {
 		freq = "1d"
 	}
+	warmupDays := req.WarmupDays
+	if warmupDays <= 0 && freq == "1m" {
+		warmupDays = 30 // 分钟模式默认预热 30 个交易日(供 get_history 分钟序列使用)
+	}
 	startDays, _ := schema.ParseDate(req.StartDate)
 	endDays, _ := schema.ParseDate(req.EndDate)
 	cfg := btengine.Config{
@@ -228,7 +232,7 @@ func (s *Server) run(job *Job) {
 
 		CapitalBase: req.CapitalBase,
 		Benchmark:   strings.TrimSpace(req.Benchmark),
-		WarmupDays:  req.WarmupDays,
+		WarmupDays:  warmupDays,
 		Params:      job.Params,
 	}
 
