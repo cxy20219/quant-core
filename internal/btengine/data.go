@@ -29,6 +29,8 @@ type DataPortal struct {
 	// 公司行动:按日索引 + 按证券索引(quantbt 的 corporate_actions / get_stock_exrights)
 	actionsByDay map[int64][]CorporateAction
 	actionsBySec map[string][]CorporateAction
+	// crossYears 缓存 daily_cross 各年份是否已物化
+	crossYears map[string]bool
 
 	mu sync.Mutex
 }
@@ -285,14 +287,14 @@ func (p *DataPortal) Fundamentals(securities []string, day int64) ([]Fundamental
 	if len(securities) == 0 {
 		return nil, nil
 	}
-	ds, err := p.lake.Registry.Get("bars_daily")
+	ds, err := p.fundamentalsDataset(day)
 	if err != nil {
 		return nil, err
 	}
 	codeIdx, _ := ds.FieldIndex("ts_code")
 	dateIdx, _ := ds.FieldIndex("trade_date")
 	cur, err := p.scanner.Open(query.Request{
-		Dataset: "bars_daily",
+		Dataset: ds.Name,
 		Columns: []string{"ts_code", "trade_date", "turnover_rate", "pe", "pe_ttm", "pb", "ps", "ps_ttm",
 			"dv_ttm", "total_share", "float_share", "free_share", "total_mv", "circ_mv"},
 		Filter: &query.Filter{Preds: []query.Predicate{
@@ -328,6 +330,77 @@ func (p *DataPortal) Fundamentals(securities []string, day int64) ([]Fundamental
 		return nil, err
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Security < out[j].Security })
+	return out, nil
+}
+
+// fundamentalsDataset 返回估值查询用的数据集:优先横截面物化表 daily_cross
+// (按 (trade_date, ts_code) 排序,全市场单日查询只读一个行组);
+// 该年份未物化时回退 bars_daily(按年判断,避免部分物化时静默查空)。
+func (p *DataPortal) fundamentalsDataset(day int64) (*schema.Dataset, error) {
+	if ds, err := p.lake.Registry.Get("daily_cross"); err == nil && p.crossYearReady(ds, day) {
+		return ds, nil
+	}
+	return p.lake.Registry.Get("bars_daily")
+}
+
+// crossYearReady 判断 daily_cross 的指定年份分区是否已物化(结果缓存)。
+func (p *DataPortal) crossYearReady(ds *schema.Dataset, day int64) bool {
+	year := fmt.Sprintf("%04d", schema.TimeFromDays(day).Year())
+	p.mu.Lock()
+	if p.crossYears == nil {
+		p.crossYears = map[string]bool{}
+	}
+	if ready, ok := p.crossYears[year]; ok {
+		p.mu.Unlock()
+		return ready
+	}
+	p.mu.Unlock()
+	files, err := p.lake.WalkFiles(ds, func(values map[string]string, depth int) bool {
+		return values["year"] == year
+	})
+	ready := err == nil && len(files) > 0
+	p.mu.Lock()
+	p.crossYears[year] = ready
+	p.mu.Unlock()
+	return ready
+}
+
+// StockBasicRow 是 stock_basic 快照的一行。
+type StockBasicRow struct {
+	Code       string
+	Name       string
+	ListDate   int64
+	DelistDate int64
+	Status     string
+}
+
+// StockBasic 返回股票基础信息全表(约 6 千行,调用方自行缓存)。
+func (p *DataPortal) StockBasic() ([]StockBasicRow, error) {
+	if _, err := p.lake.Registry.Get("stock_basic"); err != nil {
+		return nil, err
+	}
+	cur, err := p.scanner.Open(query.Request{
+		Dataset: "stock_basic",
+		Columns: []string{"ts_code", "name", "list_date", "delist_date", "list_status"},
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close()
+	out := make([]StockBasicRow, 0, 8192)
+	for cur.Next() {
+		row := cur.Row()
+		out = append(out, StockBasicRow{
+			Code:       row[0].S,
+			Name:       row[1].S,
+			ListDate:   row[2].I,
+			DelistDate: row[3].I,
+			Status:     row[4].S,
+		})
+	}
+	if err := cur.Err(); err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 

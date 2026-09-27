@@ -274,6 +274,16 @@ def get_snapshot(security):
     return _unsupported_trade_api("get_snapshot")()
 
 
+def get_Ashares(date=None):
+    """指定日期在市的 A 股代码列表(PTrade 语义:list_date<=date<delist_date;date 缺省用当前回测日)。"""
+    return _rpc.call("get_Ashares", date=date)
+
+
+def get_stock_name(stock_code):
+    """证券名称(来自 stock_basic 快照);未找到返回空串。"""
+    return _rpc.call("get_stock_name", security=stock_code)
+
+
 def set_universe(security_list):
     return _rpc.call("set_universe", securities=_as_list(security_list))
 
@@ -610,6 +620,7 @@ class Runner:
             "get_history": get_history, "get_price": get_price,
             "get_stock_exrights": get_stock_exrights,
             "get_fundamentals": get_fundamentals,
+            "get_Ashares": get_Ashares, "get_stock_name": get_stock_name,
             "set_universe": set_universe, "set_benchmark": set_benchmark,
             "set_commission": set_commission, "set_slippage": set_slippage,
             "set_fixed_slippage": set_fixed_slippage,

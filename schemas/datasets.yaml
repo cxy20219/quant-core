@@ -63,6 +63,34 @@ datasets:
       - {name: vol,       type: float64, unit: hand, desc: 成交量(手)}
       - {name: amount,    type: float64, unit: k_cny, desc: 成交额(千元)}
 
+  daily_cross:
+    description: 日频横截面物化表(与 bars_daily 同源,按 (trade_date, ts_code) 排序;供全市场单日筛选)
+    root: canonical/daily_cross
+    partitions: [year]
+    primary_key: [ts_code, trade_date]
+    sorted_by: [trade_date, ts_code]
+    writer: {row_group_rows: 8192, target_file_rows: 4000000}
+    fields:
+      - {name: ts_code,        type: string}
+      - {name: trade_date,     type: date}
+      - {name: close,          type: float64}
+      - {name: pre_close,      type: float64}
+      - {name: pct_chg,        type: float64, unit: percent}
+      - {name: vol,            type: float64, unit: hand, desc: 成交量(手)}
+      - {name: amount,         type: float64, unit: k_cny, desc: 成交额(千元)}
+      - {name: turnover_rate,  type: float64, unit: percent}
+      - {name: pe,             type: float64}
+      - {name: pe_ttm,         type: float64}
+      - {name: pb,             type: float64}
+      - {name: ps,             type: float64}
+      - {name: ps_ttm,         type: float64}
+      - {name: dv_ttm,         type: float64}
+      - {name: total_share,    type: float64, unit: 10k_share, desc: 总股本(万股)}
+      - {name: float_share,    type: float64, unit: 10k_share}
+      - {name: free_share,     type: float64, unit: 10k_share}
+      - {name: total_mv,       type: float64, unit: 10k_cny, desc: 总市值(万元)}
+      - {name: circ_mv,        type: float64, unit: 10k_cny, desc: 流通市值(万元)}
+
   adj_factor:
     description: 复权因子(后复权)
     root: canonical/adj_factor

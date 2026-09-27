@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -198,6 +199,10 @@ func (w *Worker) dispatch(method string, raw json.RawMessage) (any, error) {
 		return w.rpcStockExrights(raw)
 	case "get_fundamentals":
 		return w.rpcFundamentals(raw)
+	case "get_Ashares":
+		return w.rpcAshares(raw)
+	case "get_stock_name":
+		return w.rpcStockName(raw)
 	default:
 		return nil, fmt.Errorf("不支持的策略 API: %s", method)
 	}
@@ -822,6 +827,92 @@ func rawDateString(raw json.RawMessage) string {
 func dateIntFromDays(days int64) int {
 	t := schema.TimeFromDays(days).UTC()
 	return t.Year()*10000 + int(t.Month())*100 + t.Day()
+}
+
+// stockInfo 是 stock_basic 快照的一行。
+type stockInfo struct {
+	Code       string
+	Name       string
+	ListDate   int64
+	DelistDate int64
+	Status     string
+}
+
+// loadStockBasic 加载 stock_basic 快照(约 6 千行,一次加载后缓存)。
+func (w *Worker) loadStockBasic() (map[string]stockInfo, error) {
+	if w.stockBasic != nil {
+		return w.stockBasic, nil
+	}
+	portal := w.host.host.Engine.Portal
+	rows, err := portal.StockBasic()
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]stockInfo, len(rows))
+	for _, row := range rows {
+		out[row.Code] = stockInfo{
+			Code: row.Code, Name: row.Name, ListDate: row.ListDate,
+			DelistDate: row.DelistDate, Status: row.Status,
+		}
+	}
+	w.stockBasic = out
+	return out, nil
+}
+
+// rpcAshares 返回指定日期在市的 A 股代码(PTrade get_Ashares 语义):
+// list_date <= date 且 (delist_date 为空或 > date);未指定日期用当前回测日。
+func (w *Worker) rpcAshares(raw json.RawMessage) (any, error) {
+	var p struct {
+		Date json.RawMessage `json:"date"`
+	}
+	if raw != nil {
+		_ = json.Unmarshal(raw, &p)
+	}
+	day := w.host.currentDay
+	if text := rawDateString(p.Date); text != "" {
+		parsed, err := schema.ParseDate(text)
+		if err != nil {
+			return nil, fmt.Errorf("get_Ashares: date %q 无效", text)
+		}
+		day = parsed
+	}
+	table, err := w.loadStockBasic()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(table))
+	for _, info := range table {
+		if info.ListDate > 0 && info.ListDate > day {
+			continue
+		}
+		if info.DelistDate > 0 && info.DelistDate <= day {
+			continue
+		}
+		out = append(out, toPTradeCode(info.Code))
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// rpcStockName 返回证券名称(PTrade get_stock_name 语义);未找到返回空串。
+func (w *Worker) rpcStockName(raw json.RawMessage) (any, error) {
+	var p struct {
+		Security string `json:"security"`
+	}
+	if raw != nil {
+		_ = json.Unmarshal(raw, &p)
+	}
+	if p.Security == "" {
+		return nil, fmt.Errorf("get_stock_name: security 必填")
+	}
+	table, err := w.loadStockBasic()
+	if err != nil {
+		return nil, err
+	}
+	if info, ok := table[toInternalCode(p.Security)]; ok {
+		return info.Name, nil
+	}
+	return "", nil
 }
 
 // nanToNil 把 NaN 转为 nil(Go JSON 不能编码 NaN;策略侧还原为 NaN)。

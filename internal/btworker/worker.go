@@ -37,6 +37,8 @@ type Worker struct {
 	// phase 是当前回调阶段(handle_data/run_daily/...);order() 在 handle_data 内
 	// 需要先撮合可成交挂单(与 quantbt 的 _match_open_orders_before_order 一致)。
 	phase string
+	// stockBasic 是 stock_basic 快照缓存(get_Ashares / get_stock_name 用)
+	stockBasic map[string]stockInfo
 }
 
 // New 创建 worker(不启动进程)。

@@ -48,6 +48,8 @@ func main() {
 	switch os.Args[1] {
 	case "serve":
 		cmdServe(os.Args[2:])
+	case "build-cross":
+		cmdBuilCross(os.Args[2:])
 	case "migrate":
 		cmdMigrate(os.Args[2:])
 	case "import":
@@ -74,6 +76,7 @@ func usage() {
 用法:
   quantd serve   --lake <dir> --registry <yaml> --listen :8000
   quantd migrate --src <old-lake> --lake <dir> [--dataset bars_daily] [--year 2024] [--jobs 8]
+  quantd build-cross --lake <dir> [--year 2024]   # 物化日频横截面(daily_cross)
   quantd import  --dataset stock_basic [--source relay-b] [--start 20240101] [--end 20240131] [--replace]
   quantd source  list | check [name]
   quantd verify  --lake <dir> [--dataset bars_daily]
@@ -314,6 +317,27 @@ func toFloat(v any) float64 {
 		return f
 	}
 	return 0
+}
+
+// cmdBuilCross 物化日频横截面数据集(按 (trade_date, ts_code) 排序)。
+func cmdBuilCross(args []string) {
+	fs := flag.NewFlagSet("build-cross", flag.ExitOnError)
+	lakeDir := fs.String("lake", "lake", "数据湖根目录")
+	registryPath := fs.String("registry", filepath.Join("schemas", "datasets.yaml"), "数据集注册表")
+	year := fs.String("year", "", "只物化该年份(默认全部)")
+	source := fs.String("source", "bars_daily", "源数据集")
+	target := fs.String("target", "daily_cross", "目标数据集")
+	_ = fs.Parse(args)
+
+	reg := loadRegistry(*registryPath)
+	l := lake.New(*lakeDir, reg)
+	importer := &ingest.Importer{Lake: l, Logger: lake.NewBatchLogger(*lakeDir), Logf: log.Printf}
+	started := time.Now()
+	rows, err := importer.BuildCross(ingest.BuildCrossOptions{Year: *year, Source: *source, Target: *target})
+	if err != nil {
+		log.Fatalf("build-cross: %v", err)
+	}
+	log.Printf("daily_cross 物化完成: %d 行 in %s", rows, time.Since(started).Round(time.Second))
 }
 
 func cmdMigrate(args []string) {
